@@ -1,0 +1,443 @@
+#!/usr/bin/env node
+// cdp-relay CLI — see ../docs/SPEC.md for protocol contract.
+//
+// Multi-browser: pick a target with --browser <id|label>. When exactly one
+// browser is connected the flag is optional (the daemon auto-selects).
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Buffer } from "node:buffer";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const DAEMON_SCRIPT = resolve(__dirname, "..", "daemon", "server.mjs");
+const DEFAULT_PORT = 9223;
+
+// ---- arg parse ----
+
+function parseArgs(argv) {
+  const args = [];
+  const flags = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith("--")) {
+      const eq = a.indexOf("=");
+      if (eq !== -1) {
+        flags[a.slice(2, eq)] = a.slice(eq + 1);
+      } else {
+        const next = argv[i + 1];
+        if (next !== undefined && !next.startsWith("--")) {
+          // known boolean flags don't consume the next token
+          if (a === "--await" || a === "--pretty") {
+            flags[a.slice(2)] = true;
+          } else {
+            flags[a.slice(2)] = next;
+            i++;
+          }
+        } else {
+          flags[a.slice(2)] = true;
+        }
+      }
+    } else {
+      args.push(a);
+    }
+  }
+  return { args, flags };
+}
+
+const { args, flags } = parseArgs(process.argv.slice(2));
+const PRETTY = !!flags.pretty;
+const PORT = Number(flags.port || process.env.CDP_RELAY_PORT || DEFAULT_PORT);
+const BROWSER = flags.browser || process.env.CDP_RELAY_BROWSER || "";
+const PID_FILE = `/tmp/cdp-relay-${PORT}.pid`;
+const LOG_FILE = `/tmp/cdp-relay-${PORT}.log`;
+
+function out(obj) {
+  if (PRETTY) {
+    console.log(typeof obj === "string" ? obj : JSON.stringify(obj, null, 2));
+  } else {
+    console.log(typeof obj === "string" ? obj : JSON.stringify(obj));
+  }
+}
+
+function fail(msg, code = 1) {
+  console.error("cdp-relay:", msg);
+  process.exit(code);
+}
+
+// ---- browser selector threading ----
+
+// Append ?browser= to a GET path (when a target is specified).
+function browserQuery(extra = "") {
+  const params = [];
+  if (BROWSER) params.push(`browser=${encodeURIComponent(BROWSER)}`);
+  if (extra) params.push(extra);
+  return params.length ? "?" + params.join("&") : "";
+}
+
+// Add `browser` to a POST body (when a target is specified).
+function withBrowser(body) {
+  return BROWSER ? { ...body, browser: BROWSER } : body;
+}
+
+// ---- HTTP client ----
+
+async function api(path, opts = {}) {
+  const url = `http://127.0.0.1:${PORT}${path}`;
+  let res;
+  try {
+    res = await fetch(url, opts);
+  } catch (e) {
+    fail(`daemon unreachable on :${PORT} (${e.message}). Try: cdp-relay daemon start`);
+  }
+  const text = await res.text();
+  let body;
+  try { body = text ? JSON.parse(text) : {}; } catch { body = { raw: text }; }
+  return { status: res.status, body };
+}
+
+async function get(path) {
+  return api(path, { method: "GET" });
+}
+async function post(path, body) {
+  return api(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+}
+
+function ensureOk(r, ctx) {
+  if (r.status >= 400) fail(`${ctx}: HTTP ${r.status} ${r.body?.error || ""}`);
+  return r.body;
+}
+
+// ---- daemon control ----
+
+async function daemonStatus() {
+  try {
+    const res = await fetch(`http://127.0.0.1:${PORT}/status`);
+    if (!res.ok) throw new Error("not ok");
+    const body = await res.json();
+    return { running: true, ...body };
+  } catch {
+    const pid = pidFromFile();
+    if (pid && processAlive(pid)) {
+      return { running: true, port: PORT, pid, note: "process alive but /status unreachable" };
+    }
+    return { running: false, port: PORT };
+  }
+}
+
+function pidFromFile() {
+  if (!existsSync(PID_FILE)) return null;
+  try {
+    const n = Number(readFileSync(PID_FILE, "utf8").trim());
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function processAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+async function startDaemon() {
+  const existing = pidFromFile();
+  if (existing && processAlive(existing)) {
+    fail(`daemon already running on :${PORT} (pid ${existing})`);
+  }
+  try {
+    const res = await fetch(`http://127.0.0.1:${PORT}/status`);
+    if (res.ok) fail(`port :${PORT} already serving (not our pid file?). Stop manually first.`);
+  } catch {}
+
+  const fd = await import("node:fs");
+  const log = fd.openSync(LOG_FILE, "a");
+  const child = spawn(process.execPath, [DAEMON_SCRIPT, String(PORT)], {
+    detached: true,
+    stdio: ["ignore", log, log],
+    env: { ...process.env, CDP_RELAY_PORT: String(PORT) },
+  });
+  child.unref();
+  writeFileSync(PID_FILE, String(child.pid), "utf8");
+  for (let i = 0; i < 30; i++) {
+    await sleep(50);
+    try {
+      const r = await fetch(`http://127.0.0.1:${PORT}/status`);
+      if (r.ok) return { ok: true, pid: child.pid, port: PORT, log: LOG_FILE };
+    } catch {}
+  }
+  fail(`daemon spawned (pid ${child.pid}) but not responding on :${PORT}; check ${LOG_FILE}`);
+}
+
+async function stopDaemon() {
+  let stopped = false;
+  try {
+    const r = await fetch(`http://127.0.0.1:${PORT}/shutdown`, { method: "POST" });
+    if (r.ok) stopped = true;
+  } catch {}
+  const pid = pidFromFile();
+  if (pid && processAlive(pid)) {
+    try {
+      process.kill(pid, "SIGTERM");
+      stopped = true;
+    } catch {}
+    for (let i = 0; i < 20; i++) {
+      if (!processAlive(pid)) break;
+      await sleep(50);
+    }
+  }
+  if (existsSync(PID_FILE)) {
+    try { unlinkSync(PID_FILE); } catch {}
+  }
+  return { ok: true, stopped };
+}
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+// ---- subcommands ----
+
+const cmds = {
+  async daemon() {
+    const sub = args[1];
+    if (sub === "start") return out(await startDaemon());
+    if (sub === "stop") return out(await stopDaemon());
+    if (sub === "status") return out(await daemonStatus());
+    fail(`daemon: expected start|stop|status, got ${sub || "(nothing)"}`);
+  },
+
+  async browsers() {
+    const r = await get("/browsers");
+    out(ensureOk(r, "browsers").browsers || []);
+  },
+
+  async tabs() {
+    const r = await get("/tabs" + browserQuery());
+    out(ensureOk(r, "tabs").tabs || []);
+  },
+
+  async attach() {
+    const tabId = numArg(1, "tabId");
+    out(ensureOk(await post("/attach", withBrowser({ tabId })), "attach"));
+  },
+
+  async detach() {
+    const tabId = numArg(1, "tabId");
+    out(ensureOk(await post("/detach", withBrowser({ tabId })), "detach"));
+  },
+
+  async eval() {
+    const tabId = numArg(1, "tabId");
+    const expression = args[2];
+    if (!expression) fail("eval: expected <js>");
+    const r = await post("/send", withBrowser({
+      tabId,
+      method: "Runtime.evaluate",
+      params: {
+        expression,
+        awaitPromise: !!flags.await,
+        returnByValue: true,
+        generatePreview: true,
+      },
+    }));
+    const body = ensureOk(r, "eval");
+    if (body.ok === false) {
+      out({ ok: false, error: body.error });
+      process.exitCode = 2;
+      return;
+    }
+    const ex = body.result?.exceptionDetails;
+    if (ex) {
+      out({ ok: false, exception: ex.exception?.description || ex.text, stack: ex.stackTrace });
+      process.exitCode = 2;
+      return;
+    }
+    const val = body.result?.result;
+    if (PRETTY) {
+      console.log(formatEval(val));
+    } else {
+      out({ ok: true, value: val?.value, type: val?.type, description: val?.description });
+    }
+  },
+
+  async net() {
+    const tabId = numArg(1, "tabId");
+    const sub = args[2];
+    if (sub === "list") {
+      const extra = flags.filter ? `filter=${encodeURIComponent(flags.filter)}` : "";
+      const body = ensureOk(await get(`/events${browserQuery(`tabId=${tabId}${extra ? "&" + extra : ""}`)}`), "net list");
+      out(aggregateRequests(body.events || []));
+      return;
+    }
+    if (sub === "body") {
+      const requestId = args[3];
+      if (!requestId) fail("net body: expected <requestId>");
+      const r = await post("/send", withBrowser({
+        tabId,
+        method: "Network.getResponseBody",
+        params: { requestId },
+      }));
+      const body = ensureOk(r, "net body");
+      if (body.ok === false) {
+        out({ ok: false, error: body.error });
+        process.exitCode = 2;
+        return;
+      }
+      const result = body.result || {};
+      const decoded = result.base64Encoded
+        ? Buffer.from(result.body || "", "base64").toString("utf8")
+        : (result.body || "");
+      if (PRETTY) {
+        console.log(decoded);
+      } else {
+        out({ ok: true, body: decoded, base64Encoded: !!result.base64Encoded });
+      }
+      return;
+    }
+    if (sub === "clear") {
+      out(ensureOk(await post("/events/clear", withBrowser({ tabId })), "net clear"));
+      return;
+    }
+    fail(`net: expected list|body|clear, got ${sub || "(nothing)"}`);
+  },
+
+  async screenshot() {
+    const tabId = numArg(1, "tabId");
+    const path = args[2] || `/tmp/cdp-relay-${Date.now()}.png`;
+    const r = await post("/send", withBrowser({
+      tabId,
+      method: "Page.captureScreenshot",
+      params: {},
+    }));
+    const body = ensureOk(r, "screenshot");
+    if (body.ok === false) {
+      out({ ok: false, error: body.error });
+      process.exitCode = 2;
+      return;
+    }
+    const data = body.result?.data;
+    if (!data) fail("screenshot: no data in response");
+    writeFileSync(path, Buffer.from(data, "base64"));
+    out({ ok: true, path });
+  },
+
+  async nav() {
+    const tabId = numArg(1, "tabId");
+    const url = args[2];
+    if (!url) fail("nav: expected <url>");
+    const r = await post("/send", withBrowser({
+      tabId,
+      method: "Page.navigate",
+      params: { url },
+    }));
+    out(ensureOk(r, "nav"));
+  },
+
+  async send() {
+    const tabId = numArg(1, "tabId");
+    const method = args[2];
+    if (!method) fail("send: expected <Method>");
+    let params = {};
+    if (args[3]) {
+      try { params = JSON.parse(args[3]); }
+      catch (e) { fail(`send: invalid params JSON: ${e.message}`); }
+    }
+    const r = await post("/send", withBrowser({ tabId, method, params }));
+    out(ensureOk(r, "send"));
+  },
+
+  async help() { printHelp(); },
+};
+
+function numArg(i, name) {
+  const v = Number(args[i]);
+  if (!Number.isFinite(v)) fail(`expected <${name}> as 1st arg`);
+  return v;
+}
+
+function aggregateRequests(events) {
+  const map = new Map();
+  for (const ev of events) {
+    const p = ev.params || {};
+    const id = p.requestId;
+    if (!id) continue;
+    if (!map.has(id)) map.set(id, { requestId: id });
+    const r = map.get(id);
+    if (ev.method === "Network.requestWillBeSent") {
+      r.method = p.request?.method;
+      r.url = p.request?.url;
+      r.type = p.type;
+      r.ts = p.timestamp;
+      r.t0 = ev.ts;
+    } else if (ev.method === "Network.responseReceived") {
+      r.status = p.response?.status;
+      r.mimeType = p.response?.mimeType;
+      r.statusText = p.response?.statusText;
+    } else if (ev.method === "Network.loadingFinished") {
+      r.encodedDataLength = p.encodedDataLength;
+      r.t1 = ev.ts;
+    } else if (ev.method === "Network.loadingFailed") {
+      r.failed = p.errorText;
+      r.t1 = ev.ts;
+    }
+  }
+  return [...map.values()];
+}
+
+function formatEval(val) {
+  if (!val) return "(no result)";
+  if (val.value !== undefined) {
+    return typeof val.value === "object"
+      ? JSON.stringify(val.value, null, 2)
+      : String(val.value);
+  }
+  return val.description || val.type || "(unknown)";
+}
+
+function printHelp() {
+  console.log(`cdp-relay — CDP via browser-extension relay (see docs/SPEC.md)
+
+DAEMON
+  cdp-relay daemon start [--port 9223]
+  cdp-relay daemon stop
+  cdp-relay daemon status
+
+BROWSERS
+  cdp-relay browsers                       # list connected browsers [{id, label, attached}]
+
+TABS / ATTACH        (add --browser <id|label> when >1 browser is connected)
+  cdp-relay tabs
+  cdp-relay attach <tabId>
+  cdp-relay detach <tabId>
+
+INSPECT
+  cdp-relay eval <tabId> <js> [--await]
+  cdp-relay net <tabId> list [--filter <re>]
+  cdp-relay net <tabId> body <requestId>
+  cdp-relay net <tabId> clear
+  cdp-relay screenshot <tabId> [<path>]
+  cdp-relay nav <tabId> <url>
+
+ESCAPE
+  cdp-relay send <tabId> <Method> [<params-json>]
+
+GLOBAL
+  --browser <id|label>   target browser (optional when only one is connected;
+                         or env CDP_RELAY_BROWSER)
+  --port <N>             daemon port (default 9223; or env CDP_RELAY_PORT)
+  --pretty               pretty-print output (default JSON-line)
+`);
+}
+
+// ---- dispatch ----
+
+const cmd = args[0];
+if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
+  printHelp();
+  process.exit(0);
+}
+if (!(cmd in cmds)) fail(`unknown command: ${cmd}. Try: cdp-relay help`);
+
+cmds[cmd]().catch((e) => fail(e?.message || String(e)));

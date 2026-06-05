@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "cdp-relay",
+  "version": "0.3.0",
+  "description": "Bridge chrome.debugger to a local daemon (cdp-relay) for agent-driven control. Multi-browser: each profile gets a persistent id; set a label in the popup. Popup is a debug fallback when the daemon is offline.",
+  "permissions": ["debugger", "tabs", "activeTab", "storage", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "cdp-relay"
+  }
+}
