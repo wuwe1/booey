@@ -171,7 +171,7 @@ PID/log per port: `/tmp/cdp-relay-<port>.pid` · `/tmp/cdp-relay-<port>.log`.
 ## CLI surface
 
 ```
-cdp-relay daemon start|stop|status [--port 9223]
+cdp-relay daemon start|stop|status [--port 9224]
 cdp-relay browsers                                # list connected browsers
 
 cdp-relay tabs [--browser <id|label>]

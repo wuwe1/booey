@@ -11,7 +11,7 @@ import { Buffer } from "node:buffer";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DAEMON_SCRIPT = resolve(__dirname, "..", "daemon", "server.mjs");
-const DEFAULT_PORT = 9223;
+const DEFAULT_PORT = 9224; // match daemon/config.mjs; 9223 is the legacy v1 relay
 
 // ---- arg parse ----
 
@@ -400,7 +400,7 @@ function printHelp() {
   console.log(`cdp-relay — CDP via browser-extension relay (see docs/SPEC.md)
 
 DAEMON
-  cdp-relay daemon start [--port 9223]
+  cdp-relay daemon start [--port 9224]
   cdp-relay daemon stop
   cdp-relay daemon status
 
@@ -426,7 +426,7 @@ ESCAPE
 GLOBAL
   --browser <id|label>   target browser (optional when only one is connected;
                          or env CDP_RELAY_BROWSER)
-  --port <N>             daemon port (default 9223; or env CDP_RELAY_PORT)
+  --port <N>             daemon port (default 9224; or env CDP_RELAY_PORT)
   --pretty               pretty-print output (default JSON-line)
 `);
 }

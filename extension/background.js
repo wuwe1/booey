@@ -16,7 +16,7 @@
 // extension build id is identical across browsers and can't tell them apart.
 
 const PROTOCOL_VERSION = 2;
-const DEFAULT_PORT = 9223;
+const DEFAULT_PORT = 9224; // must match daemon/config.mjs; 9223 is the legacy v1 relay
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 15_000;
 const LOCAL_EVENT_CAP = 500;
