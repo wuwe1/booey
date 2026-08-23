@@ -1,6 +1,6 @@
 {
   "name": "cdp-relay",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Multi-browser CDP relay: drive any number of already-logged-in browsers from one local daemon via a chrome.debugger extension. See docs/SPEC.md.",
@@ -11,7 +11,9 @@
     "cdp-relay": "node cli/cdp-relay",
     "daemon": "node daemon/server.mjs",
     "mock-ext": "node daemon/test-mock-ext.mjs",
-    "test": "node test/integration.mjs"
+    "test": "node test/integration.mjs && node test/client.mjs && node test/compat-lilto.mjs",
+    "test:compat": "node test/compat-lilto.mjs",
+    "test:client": "node test/client.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

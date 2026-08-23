@@ -1,0 +1,127 @@
+// Exercises the shipped client (clients/ts) against the real daemon + mock ext.
+//
+// The client is part of this repo's contract, not a convenience wrapper: a
+// protocol change that the client doesn't follow should fail here rather than
+// in a consumer.
+//
+//   node test/client.mjs [port]
+import { spawn } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { RelayClient, RelayError, PageJsError, isRelayConnectionFailure } from "../clients/ts/index.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const PORT = Number(process.argv[2] || 9233);
+const procs = [];
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function spawnNode(args, env) {
+  const p = spawn(process.execPath, args, { cwd: ROOT, stdio: ["ignore", "ignore", "ignore"], env: { ...process.env, ...env } });
+  procs.push(p);
+  return p;
+}
+const cleanup = () => { for (const p of procs) { try { p.kill("SIGKILL"); } catch {} } };
+
+async function pollUntil(fn, tries = 100, gap = 50) {
+  for (let i = 0; i < tries; i++) {
+    try { const v = await fn(); if (v) return v; } catch {}
+    await wait(gap);
+  }
+  return null;
+}
+
+let pass = 0, fail = 0;
+const chk = (n, got, want) => { if (got === want) { console.log("PASS", n); pass++; } else { console.log(`FAIL ${n} — got [${got}] want [${want}]`); fail++; } };
+const chkc = (n, got, sub) => { if (String(got).includes(sub)) { console.log("PASS", n); pass++; } else { console.log(`FAIL ${n} — got [${got}] want contains [${sub}]`); fail++; } };
+
+try {
+  spawnNode(["daemon/server.mjs", String(PORT)], { CDP_RELAY_CMD_TIMEOUT_MS: "800" });
+  if (!(await pollUntil(async () => (await fetch(`http://127.0.0.1:${PORT}/status`)).ok))) throw new Error("daemon never came up");
+  spawnNode(["daemon/test-mock-ext.mjs", String(PORT), "browser-A", "shopee-A"]);
+
+  const relay = new RelayClient({ base: `http://127.0.0.1:${PORT}`, browser: "shopee-A" });
+  if (!(await pollUntil(async () => (await relay.browsers()).length === 1))) throw new Error("browser never registered");
+
+  // ---- discovery ----
+  chk("tabs({fresh:false}) reads the snapshot", (await relay.tabs({ fresh: false })).some((t) => t.url === "mock://fresh-only"), false);
+  chk("tabs() round-trips", (await relay.tabs()).some((t) => t.url === "mock://fresh-only"), true);
+  chk("findTab", (await relay.findTab(/seller\.shopee\.tw/)).tabId, 1001);
+
+  // ---- attach returns the subscription it actually installed ----
+  const sub = await relay.attach(1001, { events: ["net"] });
+  chk("attach reports enabled domains", sub.enabled.includes("Network"), true);
+  chk("attach expands the preset", sub.events.includes("Network.responseReceived"), true);
+  chk("attach reports no failures", sub.failed.length, 0);
+
+  // ---- running code ----
+  chkc("eval", await relay.eval(1001, "document.title"), "shopee-A (mock)");
+  chkc("evalFn", await relay.evalFn(1001, (a) => a, "arg"), "shopee-A (mock)");
+  await relay.navigate(1001, "https://seller.shopee.tw/portal");
+  chk("navigate resolves", true, true);
+  chk("screenshot returns bytes", (await relay.screenshot(1001)).byteLength > 0, true);
+
+  // ---- events, with the cursor ----
+  await wait(350);
+  const p1 = await relay.readEvents(1001);
+  chk("readEvents returns the burst", p1.events.length, 3);
+  chk("...not truncated", p1.truncated, false);
+  await relay.subscribe(1001, ["net"]);
+  await wait(350);
+  const p2 = await relay.readEvents(1001, { since: p1.nextSeq });
+  chk("cursor returns only new events", p2.events.length, 3);
+  chk("cursor advances", p2.nextSeq > p1.nextSeq, true);
+  chk("filter narrows", (await relay.readEvents(1001, { filter: /responseReceived/ })).events.every((e) => e.method === "Network.responseReceived"), true);
+  chkc("subscription() reads back", (await relay.subscription(1001)).join(), "Network.requestWillBeSent");
+
+  // ---- errors carry codes, not prose ----
+  try {
+    await relay.eval(9999, "1");
+    chk("unattached tab throws", false, true);
+  } catch (e) {
+    chk("...RelayError", e instanceof RelayError, true);
+    chk("...code TAB_NOT_ATTACHED", e.code, "TAB_NOT_ATTACHED");
+    chk("...not retriable", e.retriable, false);
+  }
+  try {
+    await relay.eval(1001, "THROW");
+    chk("page exception throws", false, true);
+  } catch (e) {
+    chk("...PageJsError, not RelayError", e instanceof PageJsError, true);
+    chk("...not a connection failure", isRelayConnectionFailure(e), false);
+  }
+  try {
+    await relay.send(1001, "Test.noReply", {}, { timeoutMs: 200 });
+    chk("per-command timeout fires", false, true);
+  } catch (e) {
+    chk("...code TIMEOUT", e.code, "TIMEOUT");
+    chk("...marked retriable", e.retriable, true);
+    chkc("...names the budget it used, not the daemon default", e.message, "200ms");
+    chk("...classified as a connection failure", isRelayConnectionFailure(e), true);
+  }
+  const twoBrowsers = new RelayClient({ base: `http://127.0.0.1:${PORT}` });
+  spawnNode(["daemon/test-mock-ext.mjs", String(PORT), "browser-B", "shopee-B"]);
+  await pollUntil(async () => (await twoBrowsers.browsers()).length === 2);
+  try {
+    await twoBrowsers.tabs();
+    chk("ambiguous selector throws", false, true);
+  } catch (e) {
+    chk("...code AMBIGUOUS_BROWSER", e.code, "AMBIGUOUS_BROWSER");
+  }
+  const dead = new RelayClient({ base: "http://127.0.0.1:9", timeoutMs: 500 });
+  try {
+    await dead.browsers();
+    chk("unreachable daemon throws", false, true);
+  } catch (e) {
+    chk("...code UNREACHABLE", e.code, "UNREACHABLE");
+    chk("...retriable", e.retriable, true);
+  }
+
+  console.log(`\n===== CLIENT PASS=${pass} FAIL=${fail} =====`);
+} catch (e) {
+  console.log("HARNESS ERROR:", e.message);
+  fail++;
+} finally {
+  cleanup();
+  await wait(100);
+  process.exit(fail ? 1 : 0);
+}

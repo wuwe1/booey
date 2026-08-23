@@ -220,7 +220,29 @@ const cmds = {
 
   async attach() {
     const tabId = numArg(1, "tabId");
-    out(ensureOk(await post("/attach", withBrowser({ tabId })), "attach"));
+    const events = flags.events ? String(flags.events).split(",").map((x) => x.trim()).filter(Boolean) : undefined;
+    const r = ensureOk(await post("/attach", withBrowser({ tabId, ...(events ? { events } : {}) })), "attach");
+    warnFailedDomains(r);
+    out(r);
+  },
+
+  async events() {
+    const sub = args[1];
+    const tabId = numArg(2, "tabId");
+    if (sub === "show") {
+      out(ensureOk(await get(`/events/subscribe${browserQuery(`tabId=${tabId}`)}`), "events show"));
+      return;
+    }
+    if (sub === "subscribe") {
+      const spec = args[3];
+      if (!spec) fail("events subscribe: expected <selectors>, comma-separated (e.g. net,nav or 'Network.*')");
+      const list = spec.split(",").map((x) => x.trim()).filter(Boolean);
+      const r = ensureOk(await post("/events/subscribe", withBrowser({ tabId, events: list })), "events subscribe");
+      warnFailedDomains(r);
+      out(r);
+      return;
+    }
+    fail(`events: expected show|subscribe, got ${sub || "(nothing)"}`);
   },
 
   async detach() {
@@ -266,9 +288,27 @@ const cmds = {
     const tabId = numArg(1, "tabId");
     const sub = args[2];
     if (sub === "list") {
-      const extra = flags.filter ? `filter=${encodeURIComponent(flags.filter)}` : "";
-      const body = ensureOk(await get(`/events${browserQuery(`tabId=${tabId}${extra ? "&" + extra : ""}`)}`), "net list");
-      out(aggregateRequests(body.events || []));
+      // Nothing is captured retroactively. With no Network subscription this
+      // would return an empty list that reads exactly like "the page made no
+      // requests" — say which one it is.
+      const subState = ensureOk(await get(`/events/subscribe${browserQuery(`tabId=${tabId}`)}`), "net list");
+      if (!(subState.events || []).some((sel) => sel.startsWith("Network."))) {
+        fail(
+          `no Network subscription on tab ${tabId} — run \`cdp-relay attach ${tabId} --events net\` ` +
+            "BEFORE the traffic you want to capture (subscriptions are not retroactive)",
+        );
+      }
+      const parts = [`tabId=${tabId}`];
+      if (flags.filter) parts.push(`filter=${encodeURIComponent(flags.filter)}`);
+      if (flags.since) parts.push(`since=${encodeURIComponent(flags.since)}`);
+      const body = ensureOk(await get(`/events${browserQuery(parts.join("&"))}`), "net list");
+      const requests = aggregateRequests(body.events || []);
+      if (body.truncated) {
+        process.stderr.write(
+          `warning: the event ring overwrote ${body.dropped} events on tab ${tabId} before this pull — the list below has holes\n`,
+        );
+      }
+      out(PRETTY ? requests : { requests, nextSeq: body.nextSeq, dropped: body.dropped, truncated: body.truncated });
       return;
     }
     if (sub === "body") {
@@ -357,6 +397,13 @@ function numArg(i, name) {
   return v;
 }
 
+/** Surface domains the browser refused to enable — usually a typo'd domain name. */
+function warnFailedDomains(r) {
+  const failed = r?.result?.failed;
+  if (!Array.isArray(failed) || failed.length === 0) return;
+  for (const f of failed) process.stderr.write(`warning: could not enable ${f.domain} — ${f.message}\n`);
+}
+
 function aggregateRequests(events) {
   const map = new Map();
   for (const ev of events) {
@@ -409,12 +456,15 @@ BROWSERS
 
 TABS / ATTACH        (add --browser <id|label> when >1 browser is connected)
   cdp-relay tabs
-  cdp-relay attach <tabId>
+  cdp-relay attach <tabId> [--events nav,net]     # default: nav (Page lifecycle)
   cdp-relay detach <tabId>
+  cdp-relay events show <tabId>
+  cdp-relay events subscribe <tabId> <selectors>  # presets: nav / net / console
+                                                 # or "Domain.method" / "Domain.*"
 
 INSPECT
   cdp-relay eval <tabId> <js> [--await]
-  cdp-relay net <tabId> list [--filter <re>]
+  cdp-relay net <tabId> list [--filter <re>] [--since <seq>]
   cdp-relay net <tabId> body <requestId>
   cdp-relay net <tabId> clear
   cdp-relay screenshot <tabId> [<path>]

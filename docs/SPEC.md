@@ -1,4 +1,4 @@
-# cdp-relay SPEC (protocol v2)
+# cdp-relay SPEC (protocol v4)
 
 Contract between the three segments: daemon / ext / CLI. This file is the
 **contract** only — message schema, HTTP endpoints, error codes, addressing.
@@ -14,7 +14,65 @@ caller (CLI / agent) ──HTTP──▶ daemon ──WS──▶ ext ──chro
 | daemon ↔ ext | WebSocket (JSON) |
 | ext ↔ tab | chrome.debugger |
 
-## Multi-browser model (new in v2)
+## Concurrency model
+
+```
+between browsers   parallel   separate ExtConns
+between tabs       parallel   separate lanes                      (new in v3)
+within one tab     mixed      ordered commands serialize,
+                              listed reads overlap up to 8         (new in v3)
+```
+
+A command is **ordered** unless its method appears in `UNORDERED_CDP_METHODS`
+(`daemon/config.mjs`) — the default is always the serializing one. Ordered
+commands hold their tab exclusively: they wait for the lane to drain and nothing
+starts behind them until they answer. That covers everything with tab-scoped
+race surface (input dispatch, navigation, focus, dialogs). The unordered list is
+pure reads (`Accessibility.*`, `DOMSnapshot.captureSnapshot`, `DOM.get*`,
+`Page.captureScreenshot`, …); a page model wants one AX tree per frame, and
+serializing those costs a full relay round-trip each.
+
+`POST /send` accepts `"ordered": true|false` to override the classification for
+one command.
+
+## Event subscriptions
+
+Attaching subscribes the tab to a set of events. **Nothing is retroactive** — a
+subscription only covers traffic after it is in force.
+
+A **selector** is `Domain.method` or `Domain.*`. The list drives two things:
+
+| | derived from | controls |
+|---|---|---|
+| **domains to enable** | the `Domain` part of every selector | what Chrome generates at all |
+| **methods to forward** | the whole selector | what crosses the ext → daemon wire |
+
+Filtering happens **in the extension, before any stringify/send/store**. An event
+nobody subscribed to costs one `Set.has` and nothing else.
+
+**Presets** (`EVENT_PRESETS` in `daemon/config.mjs`):
+
+| preset | selectors | enables |
+|---|---|---|
+| `nav` (**attach default**) | `Page.frameNavigated` `Page.loadEventFired` `Page.domContentEventFired` `Page.javascriptDialogOpening` | `Page` |
+| `net` | `Network.requestWillBeSent` `Network.responseReceived` `Network.loadingFinished` `Network.loadingFailed` | `Network` |
+| `console` | `Runtime.consoleAPICalled` `Runtime.exceptionThrown` | `Runtime` |
+
+`net` deliberately omits `Network.dataReceived`, which fires per data chunk and
+is the largest single source of event volume with no consumer here. `Runtime` is
+off by default: it exists to deliver console events, and **`Runtime.evaluate`
+does not need the domain enabled**.
+
+**Ownership is per tab, last writer wins.** No refcounting — a tab already has a
+single owner for focus, navigation, and dialogs. The extension unions the
+daemon's set with the popup's, since those are genuinely separate consumers.
+
+**Validation.** A malformed selector or unknown preset is a 400. A well-shaped
+selector naming a domain that does not exist (`Netwrok.*`) can only be caught by
+the browser, so `Domain.enable` failures come back in `result.failed` — a typo'd
+domain must not degrade into a subscription that silently matches nothing.
+
+## Multi-browser model (since v2)
 
 One daemon serves **many browsers at once**. Each browser runs the same
 extension build; on first run each profile mints a persistent random
@@ -23,8 +81,7 @@ for free) and may carry a user-set **`label`**. Both travel in `hello`.
 
 - **One WS connection per browser.** The daemon wraps each in an independent
   `ExtConn` with its own command scheduler, attached-tab set, and event cache.
-- **Per-browser serial, cross-browser parallel.** Each `ExtConn` keeps one
-  command in flight; different browsers run concurrently. No shared queue.
+- **No shared queue across browsers.** Each `ExtConn` schedules independently.
 - **Addressing.** Callers select a target with a `browser` value = its
   `browserId` **or** its `label`. Omitted ⇒ the daemon auto-selects when exactly
   one browser is connected, else returns 400.
@@ -37,19 +94,32 @@ each tab can be attached by only one debugger.
 
 ## daemon ↔ ext (WS over JSON)
 
-WS path: `ws://127.0.0.1:<port>/ext`. No message id. Ext→daemon messages are
+WS path: `ws://127.0.0.1:<port>/ext`. Every command carries a monotonic
+`id` (number, per connection) and its response quotes it. Messages are
 disambiguated by **shape**:
 
-- has `type` → **push** (`hello` / `event` / `tabs-changed` / `detached` / `pong`)
-- no `type`, has `ok` → **response** to the most recent command
+- has `id` → **command** (daemon→ext) or **response** (ext→daemon)
+- has `type`, no `id` → **push** (`hello` / `event` / `tabs-changed` / `detached` / `pong` / `ping`)
+
+Ids are what make more than one command in flight possible, and they are also
+what makes giving up on one safe: a response quoting a **retired id is dropped**.
+v2 paired responses positionally, so an answer to a command the daemon had
+already abandoned would resolve the *next* command's waiter and shift every
+response after it by one.
+
+The ext does **not** serialize commands. It answers whatever the daemon sends,
+in whatever order the answers come back; ordering is entirely the daemon's job.
 
 ### Hello (first message after connect, required)
 
 ```js
-{ type: "hello", version: 2, id: "<browserId>", label: "<string>", tabs: [{ tabId, url, title }, ...] }
+{ type: "hello", version: 4, id: "<browserId>", label: "<string>", tabs: [{ tabId, url, title }, ...] }
 ```
 
-`version` must equal `2` and `id` must be a non-empty string, else the daemon
+Note `id` here is the **browserId** (a string), unrelated to the numeric message
+id on commands.
+
+`version` must equal `4` and `id` must be a non-empty string, else the daemon
 closes with code `4000` (version/id mismatch ⇒ ext stops reconnecting). `label`
 may be `""`. A second hello on the same connection (e.g. after the user edits
 the label) is allowed and updates the label in place.
@@ -57,35 +127,51 @@ the label) is allowed and updates the label in place.
 ### Daemon → Ext
 
 ```js
-{ type: "cdp",       tabId, method, params }   // forward any CDP command
-{ type: "attach",    tabId }
-{ type: "detach",    tabId }
-{ type: "list-tabs" }
-{ type: "ping" }
+{ id, type: "cdp",        tabId, method, params }  // forward any CDP command
+{ id, type: "attach",     tabId, events: [selector] }
+{ id, type: "events.set", tabId, events: [selector] }  // replace the subscription
+{ id, type: "detach",     tabId }
+{ id, type: "list-tabs" }
+{ type: "ping" }                                   // push: no id, answered by `pong`
 ```
 
-`params` may be omitted (treated as `{}`).
+`params` may be omitted (treated as `{}`). A command without an `id` is ignored
+by the ext. `attach` and `events.set` answer with
+`{ enabled: [domain], failed: [{domain, message}] }` — the ext diffs the desired
+domain set against what is currently enabled and emits only the difference, so
+re-pushing the same state is free and repairs drift after a reconnect.
 
 ### Ext → Daemon
 
 ```js
-// command response (next ok-shaped message after a command)
-{ ok: true,  result: {...} }
-{ ok: false, error: { message } }              // chrome.debugger error, no code
+// command response — `id` is the id of the command it answers
+{ id, ok: true,  result: {...} }
+{ id, ok: false, error: { message } }          // chrome.debugger error, no code
 
 // pushes (no corresponding request)
-{ type: "hello", version: 2, id, label, tabs }
+{ type: "hello", version: 4, id, label, tabs }
 { type: "event", tabId, method, params }
 { type: "tabs-changed", tabs: [...] }
 { type: "detached", tabId, reason }
-{ type: "pong" }
+{ type: "pong", stats: { matchedEvents, filteredEvents, droppedEvents } }
 ```
+
+`pong` carries the ext's event counters (`matched` vs `filtered` is the
+subscription filter's whole justification); they surface on `/status`.
 
 ### Heartbeat / liveness
 
-- daemon → ext `ping` every 25s; ext replies `pong`. Keeps the MV3 service
-  worker alive during normal operation (the extension also self-revives via
-  `chrome.alarms` every 24s when the SW has already died).
+Three overlapping mechanisms keep the MV3 service worker up, weakest last:
+
+1. **offscreen heartbeat** (ext-local) — an offscreen document holds a runtime
+   Port and posts on it every 1s. Port traffic resets the SW idle timer, so the
+   countdown never starts. Prevention.
+2. **daemon → ext `ping` every 25s**, answered with `pong`. Same effect while a
+   daemon is connected; also the daemon's liveness probe.
+3. **`chrome.alarms`** — resurrection, not prevention: wakes an already-dead SW
+   so it can reconnect. Chrome clamps alarm periods to a **30s minimum**, so
+   recovery latency is up to ~30s regardless of what is requested. That gap is
+   why (1) exists.
 - A connection silent for 60s is closed (`4003`).
 - Close codes: `4000` version/id mismatch (permanent stop) · `4001` non-local
   origin · `4002` replaced by same-id reconnect · `4003` silent.
@@ -96,26 +182,44 @@ Every browser-scoped endpoint takes an optional `browser` selector (`?browser=`
 on GET, `"browser"` field on POST). Omit when only one browser is connected.
 
 ```
-GET  /browsers                                   → { browsers: [{id, label, attached:[tabId], tabCount}] }
+GET  /browsers                                   → { browsers: [{id, label, attached:[tabId], tabCount, inflight}] }
 GET  /status                                     → { port, version, browserCount, browsers:[...] }
 POST /shutdown                                   → { ok: true }
 
-GET  /tabs?browser=<id|label>                    → { tabs: [{tabId, url, title}] }
-POST /attach        {browser?, tabId}            → { ok: true }
+GET  /tabs?browser=<id|label>[&fresh=0]          → { tabs: [{tabId, url, title}] }
+POST /open-tab      {browser?, url}              → { ok: true, result:{tab} }
+POST /attach        {browser?, tabId, events?}   → { ok: true, result:{events, enabled, failed} }
 POST /detach        {browser?, tabId}            → { ok: true }
-POST /send          {browser?, tabId, method, params?}
-                                                 → { ok: true, result } | { ok: false, error:{message} }
-GET  /events?browser=<>&tabId=N&filter=<re>      → { events: [{method, params, ts}] }
+POST /send          {browser?, tabId, method, params?, ordered?, timeoutMs?}
+                                                 → { ok: true, result } | { ok: false, error:{message, code} }
+
+POST /events/subscribe {browser?, tabId, events} → { ok: true, result:{events, enabled, failed} }
+GET  /events/subscribe?browser=<>&tabId=N        → { tabId, events: [selector] }
+GET  /events?browser=<>&tabId=N&since=<seq>&filter=<re>
+                                                 → { events:[{seq, method, params, ts}],
+                                                     nextSeq, dropped, truncated }
 POST /events/clear  {browser?, tabId}            → { ok: true }
 ```
 
-`/events` is a **batch pull** (returns the whole matching FIFO; repeated pulls
-return the same data). `filter` is a regex matched against `method`. Event cache
-is per `(browserId, tabId)`, a fixed-capacity ring buffer (cap 1000, oldest
-dropped on overflow).
+`fresh=0` on `/tabs` returns the snapshot the ext pushes on every tab change
+instead of round-tripping to it: one fewer hop, up to one debounce interval
+stale. `/open-tab` uses `chrome.tabs.create({active:false})` — CDP has no
+browser-level target creation reachable from a per-tab attachment, and a tab
+opened by a page's `window.open` gets foregrounded, interrupting the user.
 
-Cache lifecycle: cleared on `attach` / `detach` / ext `detached` push /
-`events/clear`.
+`timeoutMs` on `/send` overrides `CMD_TIMEOUT_MS` for one command.
+
+`/events` is an **incremental pull**: pass the previous read's `nextSeq` as
+`since` to get only what is new; `since=0` (or omitted) returns everything still
+held. `filter` is a regex matched against `method`.
+
+- `dropped` — how many events the ring has overwritten on this tab, ever.
+- `truncated` — **the ring overwrote events this caller had not read yet**.
+  Without it, losing events and nothing happening look identical.
+
+Event cache is per `(browserId, tabId)`, a ring buffer (cap 1000; override with
+`CDP_RELAY_EVENT_CACHE_CAP`). Cleared on `attach` / `detach` / ext `detached`
+push / `events/clear`.
 
 ## Idempotency
 
@@ -123,33 +227,76 @@ Cache lifecycle: cleared on `attach` / `detach` / ext `detached` push /
 - `detach` not attached → 200 `{ok:true}` (no-op)
 - `daemon start` when already running → CLI errors `daemon already running`, exit 1
 
-## Command timeout
+## Giving up on a command
 
-After forwarding a command to an ext, 30s without a response → 504
-`{error:"timeout"}`; the waiter is dropped so a late response isn't mis-paired.
+Two things retire a command before it answers. In both cases the id is retired,
+so the answer — which chrome.debugger may still deliver — lands nowhere.
 
-## Error codes
+- **Timeout.** `CMD_TIMEOUT_MS` (default 30s, override with the
+  `CDP_RELAY_CMD_TIMEOUT_MS` env var; malformed values are ignored with a
+  warning) without a response → 504.
+- **Tab detached.** An ext `detached` push fails that tab's in-flight and queued
+  commands immediately with 409, leaving other tabs' lanes running. Without
+  this, one tab losing its debugger (the user opening DevTools, most commonly)
+  would leave callers waiting out the full timeout.
 
-| case | HTTP | body |
-|---|---|---|
-| no browser connected | 503 | `{ error: "no browser connected" }` |
-| ext not ready (pre-hello) | 503 | `{ error: "extension not ready" }` |
-| ambiguous / unspecified selector | 400 | `{ error: "N browsers connected (...); specify browser=<id\|label>" }` |
-| unknown browser selector | 404 | `{ error: "no browser matching \"...\"" }` |
-| tab not attached (send) | 409 | `{ error: "tab N not attached" }` |
-| chrome.debugger error | 200 | `{ ok: false, error: { message } }` (passthrough) |
-| command timeout | 504 | `{ error: "timeout" }` |
-| internal error | 500 | `{ error: "..." }` |
-| path not found | 404 | `{ error: "not found" }` |
+## Errors
 
-`/send` chrome.debugger errors use 200 + `ok:false` (a business branch), not
-5xx (reserved for infra failure).
+Every error response carries three fields:
+
+```jsonc
+{ "error": "tab 1734 not attached", "code": "TAB_NOT_ATTACHED", "retriable": false }
+```
+
+- **`error`** — human-readable, and *only* that. It gets reworded; nothing should
+  parse it. (`code` exists because callers otherwise regex the message, and then
+  a rewording silently breaks them.)
+- **`code`** — the closed set below. Branch on this.
+- **`retriable`** — whether retrying the same call could plausibly work.
+
+| code | HTTP | when | retriable |
+|---|---|---|---|
+| `NO_BROWSER` | 503 | nothing connected | ✓ |
+| `UNKNOWN_BROWSER` | 404 | selector matched no browser | |
+| `AMBIGUOUS_BROWSER` | 400 | selector omitted with >1, or matched several | |
+| `EXT_NOT_READY` | 503 | connected but pre-hello | ✓ |
+| `EXT_DISCONNECTED` | 503 | the browser went away mid-command | ✓ |
+| `TAB_NOT_ATTACHED` | 409 | `/send` or subscribe before `/attach` | |
+| `TAB_DETACHED` | 409 | debugger taken away (DevTools opened, tab closed) | ✓ |
+| `TIMEOUT` | 504 | no answer within the command budget | ✓ |
+| `BAD_REQUEST` | 400 | malformed body, bad selector, bad regex | |
+| `NOT_FOUND` | 404 | unknown path | |
+| `INTERNAL` | 500 | | |
+| `DEBUGGER_ERROR` | **200** | chrome.debugger refused the command | |
+
+`DEBUGGER_ERROR` is a 200 + `ok:false` business branch, not a 5xx — 5xx is
+reserved for infra failure. It appears as `{ ok:false, error:{ message, code } }`.
+
+A **page-level JavaScript exception is not an error here**: `Runtime.evaluate`
+returns 200 with `exceptionDetails` in the result. The relay worked; the page
+said no. Clients turn that into their own error type (`PageJsError` in
+`clients/ts`).
+
+## Clients
+
+`clients/ts` is the supported client. It lives here, not in each consumer, so a
+protocol change updates it in the same commit that breaks it. Node runs the
+`.ts` directly (native type stripping, no build step).
+
+```ts
+import { RelayClient } from "cdp-relay/clients/ts/index.ts";
+const relay = new RelayClient({ browser: "shopee-A" });
+const tab = await relay.findOrOpenTab(/seller\.shopee\.tw/, "https://seller.shopee.tw/");
+await relay.attach(tab.tabId, { events: ["net"] });
+const title = await relay.evalFn(tab.tabId, () => document.title);
+```
 
 ## File structure
 
 ```
 cdp-relay/
 ├── docs/SPEC.md          # this file
+├── clients/ts/index.ts   # supported typed client
 ├── daemon/
 │   ├── config.mjs        # protocol constants
 │   ├── http-error.mjs    # Error + httpCode
@@ -161,6 +308,7 @@ cdp-relay/
 ├── extension/
 │   ├── manifest.json
 │   ├── background.js     # identity + daemon WS client + chrome.debugger bridge
+│   ├── offscreen-heartbeat.{html,js}  # SW keep-alive Port
 │   ├── popup.html
 │   └── popup.js          # debug fallback + label editor
 └── cli/cdp-relay         # entry; subcommands
@@ -175,9 +323,11 @@ cdp-relay daemon start|stop|status [--port 9224]
 cdp-relay browsers                                # list connected browsers
 
 cdp-relay tabs [--browser <id|label>]
-cdp-relay attach|detach <tabId> [--browser <id|label>]
+cdp-relay attach <tabId> [--events nav,net] [--browser <id|label>]
+cdp-relay detach <tabId> [--browser <id|label>]
+cdp-relay events show|subscribe <tabId> [<selectors>]
 cdp-relay eval <tabId> <js> [--await] [--browser <id|label>]
-cdp-relay net <tabId> {list|body|clear} [--filter <re>] [<requestId>] [--browser <id|label>]
+cdp-relay net <tabId> {list|body|clear} [--filter <re>] [--since <seq>] [<requestId>] [--browser <id|label>]
 cdp-relay screenshot <tabId> [<path>] [--browser <id|label>]
 cdp-relay nav <tabId> <url> [--browser <id|label>]
 cdp-relay send <tabId> <Method> [<params-json>] [--browser <id|label>]

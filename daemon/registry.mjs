@@ -60,9 +60,9 @@ export class ExtRegistry {
     const ready = this.ready();
     if (selector == null || selector === "") {
       if (ready.length === 1) return ready[0];
-      if (ready.length === 0) throw httpError(503, "no browser connected");
+      if (ready.length === 0) throw httpError(503, "no browser connected", { code: "NO_BROWSER" });
       const names = ready.map((c) => c.label || c.id).join(", ");
-      throw httpError(400, `${ready.length} browsers connected (${names}); specify browser=<id|label>`);
+      throw httpError(400, `${ready.length} browsers connected (${names}); specify browser=<id|label>`, { code: "AMBIGUOUS_BROWSER" });
     }
     // Exact id wins.
     const byId = this.byId.get(selector);
@@ -70,17 +70,20 @@ export class ExtRegistry {
     // Otherwise match by label.
     const byLabel = ready.filter((c) => c.label === selector);
     if (byLabel.length === 1) return byLabel[0];
-    if (byLabel.length > 1) throw httpError(400, `ambiguous label "${selector}" (${byLabel.length} matches); use the browser id`);
-    throw httpError(404, `no browser matching "${selector}"`);
+    if (byLabel.length > 1) throw httpError(400, `ambiguous label "${selector}" (${byLabel.length} matches); use the browser id`, { code: "AMBIGUOUS_BROWSER" });
+    throw httpError(404, `no browser matching "${selector}"`, { code: "UNKNOWN_BROWSER" });
   }
 
-  /** Discovery view. @returns {Array<{id:string,label:string,attached:number[],tabCount:number}>} */
+  /** Discovery view. @returns {Array<{id:string,label:string,attached:number[],tabCount:number,inflight:number}>} */
   list() {
     return this.ready().map((c) => ({
       id: c.id,
       label: c.label,
       attached: [...c.attachedTabs],
       tabCount: c.tabs.length,
+      inflight: c.inflight.size, // concurrent commands right now; 0..n since v3
+      subscriptions: Object.fromEntries(c.subscriptions),
+      stats: c.stats, // ext-side event counters, refreshed on each pong
     }));
   }
 }

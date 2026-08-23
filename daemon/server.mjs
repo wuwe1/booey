@@ -79,6 +79,11 @@ async function handleHttp(req, res) {
   // GET endpoints take the browser selector from the query string.
   if (method === "GET" && path === "/tabs") {
     const conn = registry.resolve(url.searchParams.get("browser"));
+    // fresh=0 reads the snapshot the ext pushes on every tabs-changed instead of
+    // asking it again. Saves a round-trip on a hot path (find-the-tab runs before
+    // basically everything), at the cost of being up to one debounce interval
+    // stale — which for "is the site already open" is fine.
+    if (url.searchParams.get("fresh") === "0") return sendJson(res, 200, { tabs: conn.tabs });
     const r = await conn.listTabs();
     return sendJson(res, 200, r.ok ? { tabs: conn.tabs } : r);
   }
@@ -86,6 +91,8 @@ async function handleHttp(req, res) {
     const conn = registry.resolve(url.searchParams.get("browser"));
     const tabId = num(url.searchParams.get("tabId"));
     const filter = url.searchParams.get("filter");
+    const sinceRaw = url.searchParams.get("since");
+    const since = sinceRaw == null || sinceRaw === "" ? 0 : num(sinceRaw);
     let re = null;
     if (filter) {
       try {
@@ -94,7 +101,12 @@ async function handleHttp(req, res) {
         throw httpError(400, "invalid filter regex: " + e.message);
       }
     }
-    return sendJson(res, 200, { events: conn.getEvents(tabId, re) });
+    return sendJson(res, 200, conn.readEvents(tabId, { since, filterRe: re }));
+  }
+  if (method === "GET" && path === "/events/subscribe") {
+    const conn = registry.resolve(url.searchParams.get("browser"));
+    const tabId = num(url.searchParams.get("tabId"));
+    return sendJson(res, 200, { tabId, events: conn.subscription(tabId) });
   }
 
   // POST endpoints take the browser selector from the body.
@@ -102,7 +114,18 @@ async function handleHttp(req, res) {
     const body = await readBody(req);
     if (path === "/attach") {
       const conn = registry.resolve(body.browser);
-      return sendJson(res, 200, await conn.attach(num(body.tabId)));
+      return sendJson(res, 200, await conn.attach(num(body.tabId), body.events ?? null));
+    }
+    if (path === "/open-tab") {
+      const conn = registry.resolve(body.browser);
+      const openUrl = String(body.url || "");
+      if (!openUrl) throw httpError(400, "missing url");
+      return sendJson(res, 200, await conn.openTab(openUrl));
+    }
+    if (path === "/events/subscribe") {
+      const conn = registry.resolve(body.browser);
+      if (!Array.isArray(body.events)) throw httpError(400, "events must be an array");
+      return sendJson(res, 200, await conn.setEvents(num(body.tabId), body.events));
     }
     if (path === "/detach") {
       const conn = registry.resolve(body.browser);
@@ -112,7 +135,15 @@ async function handleHttp(req, res) {
       const conn = registry.resolve(body.browser);
       const cdpMethod = String(body.method || "");
       if (!cdpMethod) throw httpError(400, "missing method");
-      return sendJson(res, 200, await conn.sendCdp(num(body.tabId), cdpMethod, body.params));
+      // `ordered` overrides the read/write classification in config.mjs: force a
+      // read to take the tab exclusively, or let a caller that knows better
+      // overlap something we default to serializing.
+      const ordered = typeof body.ordered === "boolean" ? body.ordered : undefined;
+      // Per-command timeout. The daemon-wide default is deliberately generous;
+      // a caller that knows its command should be quick shouldn't have to wait
+      // out a 30s budget to find out the page is wedged.
+      const timeoutMs = typeof body.timeoutMs === "number" ? body.timeoutMs : undefined;
+      return sendJson(res, 200, await conn.sendCdp(num(body.tabId), cdpMethod, body.params, ordered, timeoutMs));
     }
     if (path === "/events/clear") {
       const conn = registry.resolve(body.browser);
@@ -121,17 +152,24 @@ async function handleHttp(req, res) {
     }
   }
 
-  return sendJson(res, 404, { error: "not found" });
+  return sendJson(res, 404, { error: "not found", code: "NOT_FOUND", retriable: false });
 }
 
 // ---- bootstrap ----
 
 const httpServer = http.createServer((req, res) => {
   handleHttp(req, res).catch((e) => {
-    const code = e?.httpCode || 500;
-    if (code === 500) log("unhandled http error:", e);
+    const status = e?.httpCode || 500;
+    if (status === 500) log("unhandled http error:", e);
     try {
-      sendJson(res, code, { error: e?.message || String(e) });
+      // `error` stays a human-readable string — callers read that field and
+      // reworded messages must not break them. `code`/`retriable` are additive,
+      // and are what a caller should branch on instead of the message text.
+      sendJson(res, status, {
+        error: e?.message || String(e),
+        code: e?.code || "INTERNAL",
+        retriable: e?.retriable ?? false,
+      });
     } catch {
       /* response already sent */
     }

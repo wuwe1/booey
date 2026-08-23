@@ -25,8 +25,8 @@ automatically. Give each a human label in the popup (`shopee-A`, `shopee-B`) and
 address it by label or id.
 
 - one WS connection per browser, each independently scheduled
-- per-browser serial, cross-browser parallel — browser A's slow command never
-  blocks browser B
+- browser A's slow command never blocks browser B, and within a browser one
+  tab's slow command never blocks another tab (see SPEC's concurrency model)
 - works across Chromium-family browsers (Chrome / Edge / Brave / …) and across
   separate profiles of the same browser
 
@@ -54,17 +54,41 @@ cli/cdp-relay tabs --browser shopee-A
 cli/cdp-relay attach 1734 --browser shopee-A
 cli/cdp-relay eval 1734 "document.title" --browser shopee-A
 
-# 4. another browser, in parallel — independent serial queue
+# 4. another browser, in parallel — independent scheduler
 cli/cdp-relay eval 980 "location.href" --browser shopee-B
 ```
 
 When only **one** browser is connected, `--browser` is optional. Set
 `CDP_RELAY_BROWSER` to avoid repeating the flag.
 
+## Using it from code
+
+`clients/ts` is the supported client — typed, no build step (Node strips the
+types natively), shipped with the protocol so it can't drift from it.
+
+```ts
+import { RelayClient } from "./clients/ts/index.ts";
+
+const relay = new RelayClient({ browser: "shopee-A" });      // or $CDP_RELAY_BROWSER
+const tab = await relay.findOrOpenTab(/seller\.shopee\.tw/, "https://seller.shopee.tw/");
+await relay.attach(tab.tabId, { events: ["net"] });          // default is "nav"
+
+// Ship a function from your own source into the logged-in page.
+const skus = await relay.evalFn(tab.tabId, (sel) =>
+  [...document.querySelectorAll(sel)].map((e) => e.textContent), ".sku");
+
+const page = await relay.readEvents(tab.tabId, { filter: /responseReceived/ });
+if (page.truncated) console.warn(`lost ${page.dropped} events`);
+```
+
+Failures split three ways: `PageJsError` (the page's JS threw), `RelayError`
+with `.code` + `.retriable` (transport / daemon / debugger), and a plain
+resolved value. Branch on `.code`, never on the message text.
+
 ## Docs
 
-- [`docs/SPEC.md`](docs/SPEC.md) — protocol v2: WS/HTTP contract, addressing,
-  error codes, file map.
+- [`docs/SPEC.md`](docs/SPEC.md) — protocol v4: WS/HTTP contract, concurrency
+  model, event subscriptions, addressing, error codes, file map.
 
 ## Testing without a real browser
 
