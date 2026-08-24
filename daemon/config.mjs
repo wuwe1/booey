@@ -103,7 +103,34 @@ export const EVENT_PRESETS = {
     "Network.loadingFailed",
   ],
   console: ["Runtime.consoleAPICalled", "Runtime.exceptionThrown"],
+  // Document-level structure changes. Enabling DOM without calling
+  // DOM.getDocument is cheap: CDP only reports child-node mutations for nodes it
+  // has already handed out, so in practice this is just documentUpdated.
+  dom: ["DOM.documentUpdated"],
 };
+
+/**
+ * Events that mean "whatever you knew about this page's structure may be stale".
+ *
+ * Each one bumps the tab's revision (see ExtConn). A caller compares the
+ * revision before and after an action; different means the page moved under it.
+ *
+ * Fidelity scales with the subscription: `nav` (the default) catches navigation
+ * and load, `dom` adds document swaps. An unsubscribed event cannot bump
+ * anything — the extension drops it before the daemon ever sees it — so a caller
+ * that needs document-level precision has to ask for `dom`.
+ *
+ * Deliberately conservative: Page.frameNavigated fires for subframes too, and we
+ * count those. A false "changed" costs one re-read; a false "unchanged" costs a
+ * click on the wrong element.
+ */
+export const DIRTY_EVENT_METHODS = new Set([
+  "DOM.documentUpdated",
+  "Page.domContentEventFired",
+  "Page.frameNavigated",
+  "Page.loadEventFired",
+  "Page.navigatedWithinDocument",
+]);
 
 /** What `attach` subscribes to when the caller says nothing. */
 export const DEFAULT_EVENTS = ["nav"];

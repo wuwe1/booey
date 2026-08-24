@@ -57,6 +57,7 @@ nobody subscribed to costs one `Set.has` and nothing else.
 | `nav` (**attach default**) | `Page.frameNavigated` `Page.loadEventFired` `Page.domContentEventFired` `Page.javascriptDialogOpening` | `Page` |
 | `net` | `Network.requestWillBeSent` `Network.responseReceived` `Network.loadingFinished` `Network.loadingFailed` | `Network` |
 | `console` | `Runtime.consoleAPICalled` `Runtime.exceptionThrown` | `Runtime` |
+| `dom` | `DOM.documentUpdated` | `DOM` |
 
 `net` deliberately omits `Network.dataReceived`, which fires per data chunk and
 is the largest single source of event volume with no consumer here. `Runtime` is
@@ -71,6 +72,43 @@ daemon's set with the popup's, since those are genuinely separate consumers.
 selector naming a domain that does not exist (`Netwrok.*`) can only be caught by
 the browser, so `Domain.enable` failures come back in `result.failed` — a typo'd
 domain must not degrade into a subscription that silently matches nothing.
+
+## Page revision
+
+Every tab carries a monotonic `revision`, bumped by any event that means "what
+you knew about this page's structure may be stale":
+
+```
+DOM.documentUpdated · Page.frameNavigated · Page.loadEventFired
+Page.domContentEventFired · Page.navigatedWithinDocument
+```
+
+```
+GET /page?browser=<>&tabId=N
+  → { tabId, attached, revision, lastDirty: {method, ts} | null, events, url }
+```
+
+Read it before an action and after; a change means the page moved underneath
+you. That is the difference between "the click did nothing" and "the click
+opened a dialog and every index you were holding is now wrong" — the second of
+which URL comparison alone does not catch.
+
+A **counter, not a dirty flag**: a flag needs someone to clear it, and once two
+callers share a tab there is no answer to who. Every caller keeps its own
+baseline and nobody can clear anyone else's.
+
+**Fidelity is bounded by the subscription.** An unsubscribed event is dropped in
+the extension and the daemon never learns of it. Measured on a real page reload:
+`nav` alone bumps twice, `nav,dom` bumps four times. Ask for `dom` if you need
+document-level precision.
+
+The counter resets on attach / detach / `detached`: those end the observation, so
+a baseline taken before the gap must not read as "unchanged" across it.
+
+`clients/ts` builds `settled(tabId, {quietMs})` on this — wait until no dirtying
+event for `quietMs`. It is the honest version of `sleep(3000)` after a click, and
+because it watches CDP events (browser-process side) rather than page timers, it
+keeps working in a background tab where in-page polling is throttled to a halt.
 
 ## Multi-browser model (since v2)
 
@@ -187,6 +225,7 @@ GET  /status                                     → { port, version, browserCou
 POST /shutdown                                   → { ok: true }
 
 GET  /tabs?browser=<id|label>[&fresh=0]          → { tabs: [{tabId, url, title}] }
+GET  /page?browser=<>&tabId=N                    → { tabId, attached, revision, lastDirty, events, url }
 POST /open-tab      {browser?, url}              → { ok: true, result:{tab} }
 POST /attach        {browser?, tabId, events?}   → { ok: true, result:{events, enabled, failed} }
 POST /detach        {browser?, tabId}            → { ok: true }

@@ -103,6 +103,10 @@ async function handleHttp(req, res) {
     }
     return sendJson(res, 200, conn.readEvents(tabId, { since, filterRe: re }));
   }
+  if (method === "GET" && path === "/page") {
+    const conn = registry.resolve(url.searchParams.get("browser"));
+    return sendJson(res, 200, conn.page(num(url.searchParams.get("tabId"))));
+  }
   if (method === "GET" && path === "/events/subscribe") {
     const conn = registry.resolve(url.searchParams.get("browser"));
     const tabId = num(url.searchParams.get("tabId"));

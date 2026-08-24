@@ -156,6 +156,9 @@ the `/events` cursor without reattaching.
 ## Gotchas
 
 - **`/send` requires the tab be attached first** — otherwise 409. Attach before eval.
+- **The page `revision` only sees what is subscribed.** An unsubscribed dirtying
+  event never reaches the daemon, so `nav` alone under-reports document swaps.
+  Never present the revision as more precise than the subscription allows.
 - **Subscriptions are not retroactive.** Subscribe before the traffic you want,
   not after. `cdp-relay net list` fails loudly when Network isn't subscribed
   rather than returning an empty list that reads like "no requests happened".
@@ -218,7 +221,8 @@ Do **not** add a `Co-Authored-By` trailer. Push only when the user asks.
   structured error codes, and `clients/ts`.
 - **v5** `cdp` commands and events carry an optional `sessionId`, so a flat
   auto-attached out-of-process iframe can be addressed. Verified end to end on a
-  real OOPIF — see SPEC's "Sessions" section.
+  real OOPIF — see SPEC's "Sessions" section. Same release adds the per-tab page
+  `revision` (`GET /page`) and the `dom` event preset.
 
 v3 and v4 were motivated by an audit against `browserbase/stagehand` and
 `browser-use` (see `~/Developer/browser_agent/docs/cdp-relay-design.md`,

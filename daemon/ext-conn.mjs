@@ -30,6 +30,7 @@ import {
   EVENT_CACHE_CAP,
   MAX_INFLIGHT_PER_TAB,
   UNORDERED_CDP_METHODS,
+  DIRTY_EVENT_METHODS,
   expandEventSelectors,
 } from "./config.mjs";
 
@@ -70,6 +71,17 @@ export class ExtConn {
     this.subscriptions = new Map();
     /** @type {{matchedEvents:number,filteredEvents:number,droppedEvents:number}|null} last stats from a pong */
     this.stats = null;
+    /**
+     * tabId → { revision, lastDirty }. `revision` is monotonic and bumped by any
+     * event in DIRTY_EVENT_METHODS.
+     *
+     * Monotonic counter rather than a boolean dirty flag on purpose: a flag needs
+     * someone to clear it, and the moment two callers share a tab there is no
+     * answer to who that is. A counter is read-and-compare — every caller keeps
+     * its own baseline and nobody can clear anyone else's.
+     * @type {Map<number, {revision:number, lastDirty:{method:string, ts:number}|null}>}
+     */
+    this.pageState = new Map();
 
     this._onHello = onHello;
     this._onClose = onClose;
@@ -329,6 +341,7 @@ export class ExtConn {
           const ev = { method: m.method, params: m.params, ts: Date.now() };
           if (m.sessionId) ev.sessionId = m.sessionId; // came from an OOPIF/worker session
           this.cacheEvent(m.tabId, ev);
+          if (DIRTY_EVENT_METHODS.has(m.method)) this.bumpRevision(m.tabId, m.method, ev.ts);
         }
         return;
       case "detached":
@@ -375,6 +388,33 @@ export class ExtConn {
     this._onHello(this); // registry registers under this.id (may kick a same-id stale conn)
   }
 
+  // ---- page revision ----
+
+  /** @param {number} tabId @param {string} method @param {number} ts */
+  bumpRevision(tabId, method, ts) {
+    const st = this.pageState.get(tabId) ?? { revision: 0, lastDirty: null };
+    st.revision++;
+    st.lastDirty = { method, ts };
+    this.pageState.set(tabId, st);
+  }
+
+  /**
+   * @param {number} tabId
+   * @returns {{tabId:number, attached:boolean, revision:number, lastDirty:any, events:string[], url:string}}
+   */
+  page(tabId) {
+    const st = this.pageState.get(tabId) ?? { revision: 0, lastDirty: null };
+    const tab = this.tabs.find((t) => t.tabId === tabId);
+    return {
+      tabId,
+      attached: this.attachedTabs.has(tabId),
+      revision: st.revision,
+      lastDirty: st.lastDirty,
+      events: this.subscription(tabId),
+      url: tab?.url ?? "",
+    };
+  }
+
   // ---- event cache (per tab) ----
 
   /** @param {number} tabId @param {{method:string,params:any,ts:number}} ev */
@@ -403,6 +443,10 @@ export class ExtConn {
   /** @param {number} tabId */
   clearTabCache(tabId) {
     this.events.delete(tabId);
+    // The revision counts changes to a page we were watching. Detaching or
+    // re-attaching ends that observation, so the count starts over rather than
+    // letting a stale baseline look valid across the gap.
+    this.pageState.delete(tabId);
   }
 
   eventCount() {

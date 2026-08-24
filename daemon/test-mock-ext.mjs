@@ -10,6 +10,7 @@
 // well-behaved browser never takes:
 //   Test.sleep    { ms }  reply after a delay — for concurrency timing
 //   Test.late     { ms }  reply after a delay the daemon will have given up on
+//   Test.dirty    {method}  emit one dirtying event (default Page.loadEventFired)
 //   Test.noReply          never reply
 //   Test.detach           push `detached` for the tab, then never reply
 // Every subscription change re-emits the fake event burst, so a test can advance
@@ -121,6 +122,12 @@ function resultFor(m) {
 /** @returns {Promise<any>|any} the `result` payload, or null to answer nothing */
 function runCdp(m) {
   if (m.method === "Test.noReply") return null;
+  if (m.method === "Test.dirty") {
+    // Emit a dirtying event, subject to the tab's subscription like any other.
+    const method = m.params?.method || "Page.loadEventFired";
+    if (subscribed(m.tabId, method)) send({ type: "event", tabId: m.tabId, method, params: {} });
+    return { emitted: method };
+  }
   if (m.method === "Test.detach") {
     send({ type: "detached", tabId: m.tabId, reason: "canceled_by_user" });
     return null;

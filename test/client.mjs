@@ -73,6 +73,60 @@ try {
   chk("filter narrows", (await relay.readEvents(1001, { filter: /responseReceived/ })).events.every((e) => e.method === "Network.responseReceived"), true);
   chkc("subscription() reads back", (await relay.subscription(1001)).join(), "Network.requestWillBeSent");
 
+  // ---- page revision ----
+  // The subscription bounds what can bump it: an unsubscribed dirtying event is
+  // dropped in the extension and the daemon never learns of it.
+  await relay.subscribe(1001, ["nav", "dom"]);
+  const p0 = await relay.page(1001);
+  chk("page() reports the tab", p0.tabId, 1001);
+  chk("page() reports attached", p0.attached, true);
+  const r0 = p0.revision;
+
+  await relay.send(1001, "Test.dirty", { method: "Page.loadEventFired" });
+  await wait(200);
+  const r1 = await relay.revision(1001);
+  chk("a dirtying event bumps the revision", r1 > r0, true);
+  chkc("...and says what did it", (await relay.page(1001)).lastDirty?.method, "Page.loadEventFired");
+
+  await relay.send(1001, "Test.dirty", { method: "DOM.documentUpdated" });
+  await wait(200);
+  chk("dom preset catches document swaps too", (await relay.revision(1001)) > r1, true);
+
+  const r2 = await relay.revision(1001);
+  await relay.send(1001, "Runtime.evaluate", { expression: "1" });
+  await wait(200);
+  chk("a plain command does NOT bump it", await relay.revision(1001), r2);
+
+  // An event nobody subscribed to cannot bump anything.
+  await relay.subscribe(1001, ["net"]);
+  const r3 = await relay.revision(1001);
+  await relay.send(1001, "Test.dirty", { method: "Page.loadEventFired" });
+  await wait(200);
+  chk("unsubscribed dirtying event is invisible", await relay.revision(1001), r3);
+
+  // Re-attaching ends the observation, so the count starts over. Otherwise a
+  // caller holding a baseline from before the gap would read "unchanged" across
+  // a detach — the one answer that must never be wrong.
+  await relay.subscribe(1001, ["nav", "dom"]);
+  await relay.send(1001, "Test.dirty", {});
+  await wait(200);
+  chk("revision is non-zero before detaching", (await relay.revision(1001)) > 0, true);
+  await relay.detach(1001);
+  await relay.attach(1001, { events: ["nav", "dom"] });
+  chk("re-attaching resets the revision", await relay.revision(1001), 0);
+
+  // settled(): quiet page returns fast; churning page reports quiet:false.
+  await relay.subscribe(1001, ["nav", "dom"]);
+  const tQuiet = Date.now();
+  const quiet = await relay.settled(1001, { quietMs: 300, timeoutMs: 5000, pollMs: 50 });
+  chk(`settled() returns quiet on a still page (${Date.now() - tQuiet}ms)`, quiet.quiet, true);
+
+  const churn = setInterval(() => { relay.send(1001, "Test.dirty", {}).catch(() => {}); }, 100);
+  const busy = await relay.settled(1001, { quietMs: 400, timeoutMs: 1500, pollMs: 50 });
+  clearInterval(churn);
+  chk("settled() reports quiet:false while the page churns", busy.quiet, false);
+  await wait(600);
+
   // ---- errors carry codes, not prose ----
   try {
     await relay.eval(9999, "1");

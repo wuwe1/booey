@@ -118,6 +118,18 @@ export interface RelayEvent {
   ts: number;
 }
 
+export interface PageState {
+  tabId: number;
+  attached: boolean;
+  /** Monotonic; bumped by navigation / load / document-swap events. */
+  revision: number;
+  /** What bumped it last, or null if nothing has. */
+  lastDirty: { method: string; ts: number } | null;
+  /** Selectors in force — revision fidelity is bounded by this. */
+  events: string[];
+  url: string;
+}
+
 export interface EventPage {
   events: RelayEvent[];
   /** Pass as `since` next time to read only what is new. */
@@ -405,6 +417,61 @@ export class RelayClient {
 
   async clearEvents(tabId: number): Promise<void> {
     await this.req("POST", "/events/clear", { tabId });
+  }
+
+  // ---- page revision ----
+
+  /**
+   * What the daemon knows about this tab's structural state.
+   *
+   * `revision` is the useful field: read it before an action and after, and a
+   * change means the page moved underneath you. That is the difference between
+   * "the click did nothing" and "the click opened a dialog and every index you
+   * were holding is now wrong".
+   *
+   * Fidelity is bounded by the subscription: the default `nav` catches
+   * navigation and load; add `dom` to catch document swaps.
+   */
+  async page(tabId: number): Promise<PageState> {
+    return await this.req<PageState>("GET", `/page?tabId=${tabId}`);
+  }
+
+  async revision(tabId: number): Promise<number> {
+    return (await this.page(tabId)).revision;
+  }
+
+  /**
+   * Wait until the page stops changing — no dirtying event for `quietMs`.
+   *
+   * This is the honest version of `sleep(3000)` after a click. It watches CDP
+   * events, which come from the browser process, so it keeps working in a
+   * background tab where page timers are throttled to death and any in-page
+   * polling would stall.
+   *
+   * Returns `quiet: false` if `timeoutMs` ran out while the page was still
+   * churning — a page that never settles is a real answer, not an error.
+   */
+  async settled(
+    tabId: number,
+    opts: { quietMs?: number; timeoutMs?: number; pollMs?: number } = {},
+  ): Promise<{ revision: number; quiet: boolean }> {
+    const quietMs = opts.quietMs ?? 500;
+    const timeoutMs = opts.timeoutMs ?? 10_000;
+    const pollMs = opts.pollMs ?? 100;
+    const deadline = Date.now() + timeoutMs;
+    let last = await this.revision(tabId);
+    let lastChange = Date.now();
+    while (Date.now() < deadline) {
+      await sleep(pollMs);
+      const current = await this.revision(tabId);
+      if (current !== last) {
+        last = current;
+        lastChange = Date.now();
+        continue;
+      }
+      if (Date.now() - lastChange >= quietMs) return { revision: last, quiet: true };
+    }
+    return { revision: last, quiet: false };
   }
 
   // ---- escape hatch ----
