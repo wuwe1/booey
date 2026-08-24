@@ -198,6 +198,39 @@ export interface SnapshotState {
   stale: boolean;
 }
 
+/** 动作词表（抄 stagehand 的 11 个元素动作）。 */
+export type ActionMethod =
+  | "click"
+  | "fill"
+  | "type"
+  | "press"
+  | "scrollTo"
+  | "selectOption"
+  | "hover"
+  | "doubleClick"
+  | "dragAndDrop"
+  | "nextChunk"
+  | "prevChunk";
+
+/** 调用方给的动作：给 `index` 或直接给 `xpath`+`elementHash`。 */
+export interface ActionDraft {
+  index?: number;
+  method: ActionMethod;
+  args?: string[];
+  description?: string;
+  xpath?: string;
+  elementHash?: string;
+}
+
+export interface ActionResult {
+  ok: boolean;
+  method: ActionMethod;
+  healed?: boolean;
+  interrupted?: boolean;
+  needsInference?: boolean;
+  error?: string;
+}
+
 export interface EventPage {
   events: RelayEvent[];
   /** Pass as `since` next time to read only what is new. */
@@ -591,6 +624,22 @@ export class RelayClient {
   /** 读 daemon 缓存的快照（不重新取树）。`stale` = 页面在快照后又动过。 */
   async snapshotRead(tabId: number): Promise<SnapshotState> {
     return await this.req<SnapshotState>("GET", `/snapshot?tabId=${tabId}`);
+  }
+
+  /**
+   * 执行一批动作（设计文档 §6）。`drafts` 是 LLM 返回的 {index, method, args}，
+   * daemon 用缓存的 selectorMap 补齐 xpath/elementHash，再执行。
+   *
+   * 三级回退：xpath 失效 → elementHash 重定位（`healed: true`）→ 都没了就
+   * `needsInference: true`（调用方重新 snapshot + 推理）。批量守卫：terminatesSequence
+   * 的动作执行后丢弃队列剩余；页面 revision 变了也中断（`interrupted: true`）。
+   */
+  async act(tabId: number, drafts: ActionDraft[]): Promise<ActionResult[]> {
+    const r = await this.req<{ ok: true; result: { results: ActionResult[] } }>("POST", "/act", {
+      tabId,
+      actions: drafts,
+    });
+    return r.result.results;
   }
 
   /**

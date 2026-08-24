@@ -230,6 +230,8 @@ GET  /tabs?browser=<id|label>[&fresh=0]          → { tabs: [{tabId, url, title
 GET  /page?browser=<>&tabId=N                    → { tabId, attached, revision, lastDirty, events, url }
 GET  /snapshot?browser=<>&tabId=N                → { tabId, snapshot, stale }
 POST /snapshot       {browser?, tabId}           → { ok: true, result: Snapshot }
+POST /act            {browser?, tabId, actions:[{index?, method, args?, xpath?, elementHash?}]}
+                                                 → { ok: true, result:{ results:[ActionResult] } }
 GET  /sessions?browser=<>&tabId=N                → { tabId, sessions: [{sessionId, targetId, type, url, openedAt}] }
 POST /sessions/enable  {browser?, tabId}         → { ok: true, result:{ sessions } }
 POST /open-tab      {browser?, url}              → { ok: true, result:{tab} }
@@ -430,6 +432,36 @@ A leading `*` (`*[5]<…>`) marks nodes new since the previous snapshot (browser
 `is_new`, keyed on `frameOrdinal-backendNodeId`). `selectorMap[index]` is the
 NodeRecord to act on — the index is the only thing an LLM needs to say; the daemon
 resolves it to `xp`/`elementHash`.
+
+## Actions (L3)
+
+`POST /act` runs a batch of actions against a snapshot's `selectorMap`. Each
+action is either `{index, method, args}` (the daemon resolves the index to
+`xpath`/`elementHash`) or a full `{method, xpath, elementHash, args}`. The method
+vocabulary is closed (stagehand's eleven element actions): `click / fill / type /
+press / scrollTo / selectOption / hover / doubleClick / dragAndDrop / nextChunk /
+prevChunk`.
+
+Three-level fallback (design doc §6.2) — the second level is the one that costs
+no LLM round-trip:
+
+```
+1. xpath locates the element            → execute          zero cost
+2. xpath stale → re-snapshot, find elementHash → new xpath → execute   ★ zero LLM
+3. elementHash gone                     → needsInference   one LLM (caller re-infers)
+```
+
+A result is `{ok, method, healed?, interrupted?, needsInference?, error?}`.
+`healed` marks level 2; `needsInference` marks level 3.
+
+Batch guards (design doc §6.4): a `terminatesSequence` method (`navigate` /
+`goBack` / `goForward` / `switchTab` / `submit`) discards the rest of the queue,
+and after every action the daemon re-checks the page `revision` — if it moved
+(navigation, dialog, async refresh), the remaining actions are dropped with
+`interrupted: true`. Successful results so far are kept. `POST /act` requires a
+cached snapshot (409 otherwise); the LLM side (`observe`/`extract`) is the
+caller's — the daemon supplies the snapshot and resolves indices, it does not
+call an LLM.
 
 ## Idempotency
 

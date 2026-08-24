@@ -24,6 +24,13 @@
 
 import type { WebSocket } from "ws";
 import {
+  type Action,
+  type ActionDraft,
+  type ActionResult,
+  resolveDrafts,
+  TERMINATES_SEQUENCE,
+} from "./actions.ts";
+import {
   CMD_TIMEOUT_MS,
   DEFAULT_EVENTS,
   DIRTY_EVENT_METHODS,
@@ -34,7 +41,7 @@ import {
   UNORDERED_CDP_METHODS,
 } from "./config.ts";
 import { httpError } from "./http-error.ts";
-import { buildSnapshot, type Snapshot } from "./page-model.ts";
+import { buildSnapshot, type NodeRecord, type Snapshot } from "./page-model.ts";
 import { RingBuffer } from "./ring-buffer.ts";
 
 /** Lane key for commands that address the browser rather than a tab. */
@@ -623,6 +630,235 @@ export class ExtConn {
       });
     const current = this.pageState.get(tabId)?.revision ?? 0;
     return { tabId, snapshot: cached.snapshot, stale: current !== cached.revision };
+  }
+
+  // ---- actions (L3) ----
+
+  /**
+   * 用缓存的 selectorMap 把一批 ActionDraft（LLM 的 {index, method, args}）补成
+   * 完整 Action。没有缓存或 index 失效都 409——前者要先 snapshot，后者要重新
+   * snapshot + 重新推理。
+   */
+  resolveActions(tabId: number, drafts: ActionDraft[]): Action[] {
+    const cached = this.snapshots.get(tabId);
+    if (!cached)
+      throw httpError(409, `no snapshot cached for tab ${tabId}; POST /snapshot first`, {
+        code: "CONFLICT",
+      });
+    const actions = resolveDrafts(drafts, cached.snapshot.selectorMap);
+    if (!actions)
+      throw httpError(409, "selectorMap stale; re-snapshot and re-infer", { code: "CONFLICT" });
+    return actions;
+  }
+
+  /**
+   * 执行一批 Action，带三级回退和批量守卫（设计文档 §6.2 / §6.4）。
+   *
+   * 三级回退：
+   *   1. xpath 定位 → 执行（零成本）
+   *   2. xpath 失效 → 重新 snapshot，按 elementHash 找新 xpath（零 LLM）★
+   *   3. elementHash 也没了 → 返回 needsInference，让调用方重新推理（一次 LLM）
+   *
+   * 批量守卫：terminatesSequence 的动作执行后丢弃队列剩余；每个动作后 revision
+   * 变了（页面动了）也中断——URL 变化会通过 frameNavigated 反映成 revision bump。
+   */
+  async act(tabId: number, actions: Action[]): Promise<ExtResult> {
+    if (!this.attachedTabs.has(tabId))
+      throw httpError(409, `tab ${tabId} not attached`, { code: "TAB_NOT_ATTACHED" });
+    const baseline = this.pageState.get(tabId)?.revision ?? 0;
+    const results: ActionResult[] = [];
+    for (const action of actions) {
+      let loc = await this._locate(tabId, action.xpath);
+      let healed = false;
+      if (!loc) {
+        // 第二级：elementHash 重定位。重新取树，找同 hash 的节点拿新 xpath。
+        const r = await this.snapshot(tabId);
+        if (r.ok) {
+          const nodes = (r.result?.nodes ?? []) as NodeRecord[];
+          const node = nodes.find((n) => n.elementHash === action.elementHash);
+          if (node && node.xp !== action.xpath) {
+            action.xpath = node.xp;
+            loc = await this._locate(tabId, node.xp);
+            healed = true;
+          }
+        }
+      }
+      if (!loc) {
+        results.push({
+          ok: false,
+          method: action.method,
+          needsInference: true,
+          error: "element not found",
+        });
+        break;
+      }
+      const r = await this._dispatchAction(tabId, action, loc);
+      results.push({
+        ok: r.ok,
+        method: action.method,
+        ...(healed ? { healed: true } : {}),
+        ...(r.ok ? {} : { error: r.error }),
+      });
+      if (TERMINATES_SEQUENCE.has(action.method)) break;
+      // 运行时守卫：页面动了就停，保留已成功的部分结果。
+      if ((this.pageState.get(tabId)?.revision ?? 0) !== baseline) {
+        results.push({
+          ok: false,
+          method: action.method,
+          interrupted: true,
+          error: "page changed",
+        });
+        break;
+      }
+    }
+    return { ok: true, result: { results } };
+  }
+
+  // ---- 动作的 CDP 执行 ----
+
+  /** xpath → 元素中心坐标（先 scrollIntoView）。找不到返回 null。 */
+  async _locate(tabId: number, xpath: string): Promise<{ x: number; y: number } | null> {
+    const r = await this.sendCdp(tabId, "Runtime.evaluate", {
+      expression: `(() => {
+        const el = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+        if (!el) return null;
+        if (el.scrollIntoViewIfNeeded) el.scrollIntoViewIfNeeded(); else if (el.scrollIntoView) el.scrollIntoView();
+        const rect = el.getBoundingClientRect();
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+      })()`,
+      returnByValue: true,
+    });
+    if (!r.ok) return null;
+    const v = r.result?.result?.value;
+    return v && typeof v.x === "number" && typeof v.y === "number" ? { x: v.x, y: v.y } : null;
+  }
+
+  async _dispatchAction(
+    tabId: number,
+    action: Action,
+    loc: { x: number; y: number },
+  ): Promise<{ ok: boolean; error?: string }> {
+    switch (action.method) {
+      case "click":
+        return this._click(tabId, loc.x, loc.y);
+      case "doubleClick": {
+        const first = await this._click(tabId, loc.x, loc.y);
+        if (!first.ok) return first;
+        return this._click(tabId, loc.x, loc.y);
+      }
+      case "hover":
+        return this._hover(tabId, loc.x, loc.y);
+      case "fill":
+        return this._fill(tabId, action.xpath, action.args[0] ?? "");
+      case "type":
+        return this._type(tabId, action.xpath, action.args[0] ?? "");
+      case "press":
+        return this._press(tabId, action.args[0] ?? "");
+      case "scrollTo":
+        return this._scrollTo(tabId, action.xpath);
+      case "selectOption":
+        return this._selectOption(tabId, action.xpath, action.args[0] ?? "");
+      default:
+        return { ok: false, error: `unsupported method: ${action.method}` };
+    }
+  }
+
+  async _click(tabId: number, x: number, y: number): Promise<{ ok: boolean; error?: string }> {
+    await this.sendCdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+    await this.sendCdp(tabId, "Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x,
+      y,
+      button: "left",
+      clickCount: 1,
+    });
+    const r = await this.sendCdp(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x,
+      y,
+      button: "left",
+      clickCount: 1,
+    });
+    return r.ok ? { ok: true } : { ok: false, error: r.error?.message };
+  }
+
+  async _hover(tabId: number, x: number, y: number): Promise<{ ok: boolean; error?: string }> {
+    const r = await this.sendCdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+    return r.ok ? { ok: true } : { ok: false, error: r.error?.message };
+  }
+
+  /** 在页面里对 xpath 元素执行一段函数体（`el` 已指向该元素）。 */
+  async _evalOnXpath(
+    tabId: number,
+    xpath: string,
+    fn: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const r = await this.sendCdp(tabId, "Runtime.evaluate", {
+      expression: `(() => {
+        const el = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+        if (!el) return false;
+        ${fn}
+      })()`,
+      returnByValue: true,
+    });
+    if (!r.ok) return { ok: false, error: r.error?.message };
+    return r.result?.result?.value === false
+      ? { ok: false, error: "element not found" }
+      : { ok: true };
+  }
+
+  _fill(tabId: number, xpath: string, value: string): Promise<{ ok: boolean; error?: string }> {
+    return this._evalOnXpath(
+      tabId,
+      xpath,
+      `const proto = Object.getPrototypeOf(el);
+      const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+      if (setter) setter.call(el, ${JSON.stringify(value)}); else el.value = ${JSON.stringify(value)};
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;`,
+    );
+  }
+
+  async _type(
+    tabId: number,
+    xpath: string,
+    text: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const focus = await this._evalOnXpath(tabId, xpath, "el.focus(); return true;");
+    if (!focus.ok) return focus;
+    const r = await this.sendCdp(tabId, "Input.insertText", { text });
+    return r.ok ? { ok: true } : { ok: false, error: r.error?.message };
+  }
+
+  async _press(tabId: number, key: string): Promise<{ ok: boolean; error?: string }> {
+    const down = await this.sendCdp(tabId, "Input.dispatchKeyEvent", { type: "keyDown", key });
+    if (!down.ok) return { ok: false, error: down.error?.message };
+    const up = await this.sendCdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", key });
+    return up.ok ? { ok: true } : { ok: false, error: up.error?.message };
+  }
+
+  _scrollTo(tabId: number, xpath: string): Promise<{ ok: boolean; error?: string }> {
+    return this._evalOnXpath(
+      tabId,
+      xpath,
+      "if (el.scrollIntoViewIfNeeded) el.scrollIntoViewIfNeeded(); else el.scrollIntoView(); return true;",
+    );
+  }
+
+  _selectOption(
+    tabId: number,
+    xpath: string,
+    value: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    return this._evalOnXpath(
+      tabId,
+      xpath,
+      `el.value = ${JSON.stringify(value)};
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;`,
+    );
   }
 
   // ---- page revision ----

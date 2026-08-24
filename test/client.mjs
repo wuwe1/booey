@@ -260,6 +260,28 @@ try {
     "/html[1]/body[1]/iframe[1]/html[1]/body[1]/input[1]",
   );
 
+  // ---- v6: actions (L3) ----
+  await relay.subscribe(1001, ["nav", "dom"]);
+  const snapForAct = await relay.snapshot(1001);
+  const results = await relay.act(1001, [{ index: 1, method: "click" }]);
+  chk("act click succeeds", results[0].ok, true);
+  chk("...no healing needed on a fresh xpath", results[0].healed === true, false);
+
+  // 三级回退第二级：xpath 失效 → elementHash 重定位（healed:true，零 LLM）。
+  const btnHash = snapForAct.selectorMap[1].elementHash;
+  const healed = await relay.act(1001, [
+    { method: "click", xpath: "/html[1]/body[1]/STALE[1]", elementHash: btnHash },
+  ]);
+  chk("stale xpath heals via elementHash", healed[0].ok, true);
+  chk("...and marks healed", healed[0].healed, true);
+
+  // 第三级：xpath 和 elementHash 都没了 → needsInference。
+  const gone = await relay.act(1001, [
+    { method: "click", xpath: "/html[1]/body[1]/STALE[1]", elementHash: "0000000000000000" },
+  ]);
+  chk("missing element reports needsInference", gone[0].needsInference, true);
+  chk("...and fails", gone[0].ok, false);
+
   // ---- errors carry codes, not prose ----
   try {
     await relay.eval(9999, "1");

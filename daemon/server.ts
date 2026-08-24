@@ -185,6 +185,13 @@ async function handleHttp(req: http.IncomingMessage, res: http.ServerResponse): 
       const conn = registry.resolve(body.browser);
       return sendJson(res, 200, await conn.snapshot(num(body.tabId)));
     }
+    if (path === "/act") {
+      const conn = registry.resolve(body.browser);
+      const tabId = num(body.tabId);
+      if (!Array.isArray(body.actions)) throw httpError(400, "actions must be an array");
+      const actions = conn.resolveActions(tabId, body.actions);
+      return sendJson(res, 200, await conn.act(tabId, actions));
+    }
   }
 
   return sendJson(res, 404, { error: "not found", code: "NOT_FOUND", retriable: false });

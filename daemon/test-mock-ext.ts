@@ -119,10 +119,11 @@ function pushFakeEvents(tabId: number): void {
 /** The answer this method would give, ignoring timing. */
 function resultFor(m: any): any {
   switch (m.method) {
-    case "Runtime.evaluate":
+    case "Runtime.evaluate": {
+      const expr = String(m.params?.expression || "");
       // An expression containing THROW comes back shaped like a real page
       // exception, so a client's exceptionDetails handling can be exercised.
-      if (String(m.params?.expression || "").includes("THROW")) {
+      if (expr.includes("THROW")) {
         return {
           result: { type: "object", subtype: "error" },
           exceptionDetails: {
@@ -131,7 +132,17 @@ function resultFor(m: any): any {
           },
         };
       }
+      // Action 执行器发来的表达式：locate 返回坐标，其它（fill/scroll/select）返回 true。
+      // xpath 含 "STALE" 时返回 null，模拟「页面改版、xpath 失效」，触发三级回退。
+      if (expr.includes("getBoundingClientRect")) {
+        if (expr.includes("STALE")) return { result: { type: "object", value: null } };
+        return { result: { type: "object", value: { x: 10, y: 10 } } };
+      }
+      if (expr.includes("document.evaluate")) {
+        return { result: { type: "boolean", value: true } };
+      }
       return { result: { type: "string", value: `${LABEL || ID} (mock)` } };
+    }
     case "Network.getResponseBody":
       return { body: '{"data":{"products":[]},"code":0}', base64Encoded: false };
     case "Page.captureScreenshot":
