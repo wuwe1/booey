@@ -194,6 +194,21 @@ const INTERACTIVE_ROLES = new Set([
   "rowheader",
 ]);
 
+/**
+ * 结构性 / presentational role：真实浏览器里 html 是 `none`、div 是 `generic`、
+ * frame 是 `Iframe`。这些不该算「有语义」，否则会被 serialize 误给 index（LLM
+ * 眼里 html/div 不是可交互目标）。stagehand 的 isStructural 是 generic/none/
+ * inlinetextbox，这里再补 presentation 和 frame 宿主。
+ */
+const STRUCTURAL_ROLES = new Set([
+  "none",
+  "presentation",
+  "generic",
+  "inlinetextbox",
+  "Iframe",
+  "frame",
+]);
+
 /** sha256 → 前 16 个 hex 字符（64 bit）。browser-use 用同样的截断，只是转 int。 */
 function hash64(s: string): string {
   return createHash("sha256").update(s, "utf8").digest("hex").slice(0, 16);
@@ -418,7 +433,8 @@ export function serialize(nodes: NodeRecord[], previousIds?: Set<string>): Seria
     else byParent.set(n.parent, [n]);
   }
 
-  const isSemantic = (n: NodeRecord): boolean => n.vis && (n.int || n.role !== "" || n.name !== "");
+  const isSemantic = (n: NodeRecord): boolean =>
+    n.vis && (n.int || n.name !== "" || (n.role !== "" && !STRUCTURAL_ROLES.has(n.role)));
 
   // 自底向上：subtree 里有没有「可见且有语义」的节点。整棵没有就剪掉（§5.2 的
   // 简化剪枝：只留可见+有 role/name/可交互的，及其祖先链）。

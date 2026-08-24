@@ -603,9 +603,11 @@ export class ExtConn {
       throw httpError(409, `tab ${tabId} not attached`, { code: "TAB_NOT_ATTACHED" });
     // 主 frame 是 frameOrdinal 0；session 池里的每个 OOPIF 各占一个 frame，带着
     // 自己的 sessionId（ext 才能精确进到那个进程）。拼接是 daemon 的活，见
-    // page-model 的 stitchFrames。
+    // page-model 的 stitchFrames。worker 没有 DOM（发 DOM.getDocument 会 -32601），
+    // 页面模型只关心 iframe/frame，跳过 worker。
     const frames: Array<{ frameOrdinal: number; sessionId?: string }> = [{ frameOrdinal: 0 }];
     for (const s of this.sessions.get(tabId)?.values() ?? []) {
+      if (s.type !== "iframe" && s.type !== "frame") continue;
       frames.push({ frameOrdinal: frames.length, sessionId: s.sessionId });
     }
     const r = await this.callExt({ type: "snapshot", tabId, frames });
