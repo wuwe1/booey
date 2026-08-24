@@ -22,79 +22,172 @@
 // by one. Ids remove the failure mode outright — an answer for a retired id has
 // nowhere to land and is dropped.
 
-import { httpError } from "./http-error.mjs";
-import { RingBuffer } from "./ring-buffer.mjs";
+import type { WebSocket } from "ws";
 import {
-  PROTOCOL_VERSION,
   CMD_TIMEOUT_MS,
-  EVENT_CACHE_CAP,
-  MAX_INFLIGHT_PER_TAB,
-  UNORDERED_CDP_METHODS,
-  DIRTY_EVENT_METHODS,
   DEFAULT_EVENTS,
+  DIRTY_EVENT_METHODS,
+  EVENT_CACHE_CAP,
   expandEventSelectors,
-} from "./config.mjs";
+  MAX_INFLIGHT_PER_TAB,
+  PROTOCOL_VERSION,
+  UNORDERED_CDP_METHODS,
+} from "./config.ts";
+import { httpError } from "./http-error.ts";
+import { RingBuffer } from "./ring-buffer.ts";
 
 /** Lane key for commands that address the browser rather than a tab. */
 const BROWSER_LANE = "browser";
 
+export interface TabInfo {
+  tabId: number;
+  url: string;
+  title: string;
+}
+
+export interface ExtStats {
+  matchedEvents: number;
+  filteredEvents: number;
+  droppedEvents: number;
+}
+
+export interface PageStateEntry {
+  revision: number;
+  lastDirty: { method: string; ts: number } | null;
+}
+
+export interface PageInfo {
+  tabId: number;
+  attached: boolean;
+  revision: number;
+  lastDirty: { method: string; ts: number } | null;
+  events: string[];
+  url: string;
+}
+
+/** One flat auto-attached target: an OOPIF or worker. Keyed on targetId. */
+export interface SessionInfo {
+  sessionId: string;
+  targetId: string;
+  type: string;
+  url: string;
+  openedAt: number;
+}
+
+export interface CachedEvent {
+  method: string;
+  params: any;
+  ts: number;
+  sessionId?: string;
+}
+
+/** A command's waiter: promise resolve/reject + its lane + ordering + timer. */
+export interface Waiter {
+  lane: Lane;
+  ordered: boolean;
+  resolve: (value: any) => void;
+  reject: (reason?: any) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+export interface QueueEntry {
+  id: number;
+  msg: any;
+  ordered: boolean;
+  timeoutMs: number;
+  resolve: (value: any) => void;
+  reject: (reason?: any) => void;
+}
+
+export interface Lane {
+  key: number | string;
+  inflight: Set<number>;
+  orderedInflight: boolean;
+  queue: QueueEntry[];
+}
+
+/** A command's answer from the ext: ok:true carries `result`, ok:false carries `error`. */
+export interface ExtResult {
+  ok: boolean;
+  result?: any;
+  error?: { message: string; code?: string };
+}
+
 export class ExtConn {
+  ws: WebSocket;
+  /** Assigned on hello. */
+  id: string | null;
+  label: string;
+  helloed: boolean;
+  lastSeen: number;
+  tabs: TabInfo[];
+  attachedTabs: Set<number>;
+  nextMsgId: number;
+  /** In-flight commands across every lane, keyed by wire message id. */
+  inflight: Map<number, Waiter>;
+  /** tabId (or BROWSER_LANE) → lane. */
+  lanes: Map<number | string, Lane>;
+  /** tabId → event ring buffer. */
+  events: Map<number, RingBuffer>;
   /**
-   * @param {import("ws").WebSocket} ws
-   * @param {{ onHello: (c: ExtConn) => void, onClose: (c: ExtConn) => void, log: (...a: any[]) => void }} hooks
+   * tabId → the expanded selector list in force for that tab. One owner per tab,
+   * last writer wins: no refcounting, because a tab already has a single owner
+   * for everything else that matters (focus, navigation, dialogs).
    */
-  constructor(ws, { onHello, onClose, log }) {
+  subscriptions: Map<number, string[]>;
+  /** Last stats from a pong. */
+  stats: ExtStats | null;
+  /**
+   * tabId → { revision, lastDirty }. `revision` is monotonic and bumped by any
+   * event in DIRTY_EVENT_METHODS.
+   *
+   * Monotonic counter rather than a boolean dirty flag on purpose: a flag needs
+   * someone to clear it, and the moment two callers share a tab there is no
+   * answer to who that is. A counter is read-and-compare — every caller keeps
+   * its own baseline and nobody can clear anyone else's.
+   */
+  pageState: Map<number, PageStateEntry>;
+  /**
+   * tabId → targetId → session. Keyed on **targetId, not sessionId**: the
+   * sessionId is reissued every time the debugger reattaches, while the targetId
+   * keeps naming the same live frame. The sessionId is that frame's current
+   * address, not its identity.
+   *
+   * Neither survives a reload: the frame is destroyed and a new one is created,
+   * so both ids change (measured — targetId B359EA19D0 → 2B3BA7C45B across one
+   * Page.reload). "Stable across reattach" is not "stable across navigation";
+   * nothing here is a durable handle on a frame.
+   */
+  sessions: Map<number, Map<string, SessionInfo>>;
+
+  _onHello: (c: ExtConn) => void;
+  _onClose: (c: ExtConn) => void;
+  _log: (...a: any[]) => void;
+  _closed: boolean;
+
+  constructor(
+    ws: WebSocket,
+    hooks: {
+      onHello: (c: ExtConn) => void;
+      onClose: (c: ExtConn) => void;
+      log: (...a: any[]) => void;
+    },
+  ) {
+    const { onHello, onClose, log } = hooks;
     this.ws = ws;
-    this.id = null; // assigned on hello
+    this.id = null;
     this.label = "";
     this.helloed = false;
     this.lastSeen = Date.now();
-    /** @type {Array<{tabId:number,url:string,title:string}>} */
     this.tabs = [];
-    /** @type {Set<number>} */
     this.attachedTabs = new Set();
     this.nextMsgId = 1;
-    /**
-     * In-flight commands across every lane, keyed by wire message id.
-     * @type {Map<number, {lane:Lane, ordered:boolean, resolve:Function, reject:Function, timer:any}>}
-     */
     this.inflight = new Map();
-    /** @type {Map<number|string, Lane>} tabId (or BROWSER_LANE) → lane */
     this.lanes = new Map();
-    /** @type {Map<number, RingBuffer>} tabId → event ring buffer */
     this.events = new Map();
-    /**
-     * tabId → the expanded selector list in force for that tab. One owner per
-     * tab, last writer wins: no refcounting, because a tab already has a single
-     * owner for everything else that matters (focus, navigation, dialogs).
-     * @type {Map<number, string[]>}
-     */
     this.subscriptions = new Map();
-    /** @type {{matchedEvents:number,filteredEvents:number,droppedEvents:number}|null} last stats from a pong */
     this.stats = null;
-    /**
-     * tabId → { revision, lastDirty }. `revision` is monotonic and bumped by any
-     * event in DIRTY_EVENT_METHODS.
-     *
-     * Monotonic counter rather than a boolean dirty flag on purpose: a flag needs
-     * someone to clear it, and the moment two callers share a tab there is no
-     * answer to who that is. A counter is read-and-compare — every caller keeps
-     * its own baseline and nobody can clear anyone else's.
-     * @type {Map<number, {revision:number, lastDirty:{method:string, ts:number}|null}>}
-     */
     this.pageState = new Map();
-    /**
-     * tabId → targetId → session. Keyed on **targetId, not sessionId**: the
-     * sessionId is reissued every time the debugger reattaches, while the
-     * targetId keeps naming the same live frame. The sessionId is that frame's
-     * current address, not its identity.
-     *
-     * Neither survives a reload: the frame is destroyed and a new one is
-     * created, so both ids change (measured — targetId B359EA19D0 → 2B3BA7C45B
-     * across one Page.reload). "Stable across reattach" is not "stable across
-     * navigation"; nothing here is a durable handle on a frame.
-     * @type {Map<number, Map<string, {sessionId:string, targetId:string, type:string, url:string, openedAt:number}>>}
-     */
     this.sessions = new Map();
 
     this._onHello = onHello;
@@ -108,12 +201,11 @@ export class ExtConn {
   }
 
   /** Human-friendly handle for logs: label, else id, else pending. */
-  get name() {
+  get name(): string {
     return this.label || this.id || "(pending)";
   }
 
-  /** @param {any} msg */
-  send(msg) {
+  send(msg: any): void {
     this.ws.send(JSON.stringify(msg));
   }
 
@@ -128,24 +220,26 @@ export class ExtConn {
    * dialogs — are all tab-scoped. Unordered commands (pure reads) overlap up to
    * MAX_INFLIGHT_PER_TAB.
    *
-   * @param {any} msg
-   * @param {boolean} [ordered]
-   * @param {number} [timeoutMs] override CMD_TIMEOUT_MS for this one command
-   * @returns {Promise<any>}
+   * @param msg the wire command (without an id — one is added here)
+   * @param ordered take the tab exclusively
+   * @param timeoutMs override CMD_TIMEOUT_MS for this one command
    */
-  callExt(msg, ordered = true, timeoutMs) {
+  callExt(msg: any, ordered = true, timeoutMs?: number): Promise<ExtResult> {
     return new Promise((resolve, reject) => {
-      if (!this.helloed) return reject(httpError(503, "extension not ready", { code: "EXT_NOT_READY" }));
+      if (!this.helloed)
+        return reject(httpError(503, "extension not ready", { code: "EXT_NOT_READY" }));
       const id = this.nextMsgId++;
       const lane = this._lane(typeof msg.tabId === "number" ? msg.tabId : BROWSER_LANE);
-      const budget = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : CMD_TIMEOUT_MS;
+      const budget =
+        timeoutMs != null && Number.isFinite(timeoutMs) && timeoutMs > 0
+          ? timeoutMs
+          : CMD_TIMEOUT_MS;
       lane.queue.push({ id, msg: { ...msg, id }, ordered, timeoutMs: budget, resolve, reject });
       this._pumpLane(lane);
     });
   }
 
-  /** @param {number|string} key @returns {Lane} */
-  _lane(key) {
+  _lane(key: number | string): Lane {
     let lane = this.lanes.get(key);
     if (!lane) {
       lane = { key, inflight: new Set(), orderedInflight: false, queue: [] };
@@ -154,12 +248,11 @@ export class ExtConn {
     return lane;
   }
 
-  /** @param {Lane} lane */
-  _pumpLane(lane) {
+  _pumpLane(lane: Lane): void {
     if (this._closed) return;
     while (lane.queue.length > 0) {
       if (lane.orderedInflight) return; // an exclusive command owns the lane
-      const head = lane.queue[0];
+      const head = lane.queue[0]!;
       if (head.ordered) {
         if (lane.inflight.size > 0) return; // let the reads finish first
         lane.queue.shift();
@@ -173,13 +266,14 @@ export class ExtConn {
     this._reapLane(lane);
   }
 
-  /** @param {Lane} lane @param {any} entry */
-  _dispatch(lane, entry) {
+  _dispatch(lane: Lane, entry: QueueEntry): void {
     const { id, msg, ordered, timeoutMs, resolve, reject } = entry;
     const timer = setTimeout(() => {
       // The ext has no cancel; it may still answer this id later. Retiring the id
       // here means that answer lands nowhere, which is exactly what we want.
-      this._settle(id, (w) => w.reject(httpError(504, `timeout after ${timeoutMs}ms`, { code: "TIMEOUT" })));
+      this._settle(id, (w) =>
+        w.reject(httpError(504, `timeout after ${timeoutMs}ms`, { code: "TIMEOUT" })),
+      );
     }, timeoutMs);
     this.inflight.set(id, { lane, ordered, resolve, reject, timer });
     lane.inflight.add(id);
@@ -187,7 +281,9 @@ export class ExtConn {
     try {
       this.send(msg);
     } catch (e) {
-      this._settle(id, (w) => w.reject(httpError(503, "extension send failed: " + e.message)));
+      this._settle(id, (w) =>
+        w.reject(httpError(503, "extension send failed: " + (e as Error).message)),
+      );
     }
   }
 
@@ -195,10 +291,8 @@ export class ExtConn {
    * Retire one in-flight id, run `finish` on its waiter, and refill its lane.
    * Every exit path for a command goes through here. Unknown ids are a no-op, so
    * a late or duplicated response is harmless.
-   * @param {number} id
-   * @param {(w: {resolve:Function, reject:Function}) => void} finish
    */
-  _settle(id, finish) {
+  _settle(id: number, finish: (w: Waiter) => void): boolean {
     const w = this.inflight.get(id);
     if (!w) return false;
     this.inflight.delete(id);
@@ -211,21 +305,21 @@ export class ExtConn {
   }
 
   /** Drop a lane once it holds nothing, so tab churn doesn't grow the map. */
-  _reapLane(lane) {
+  _reapLane(lane: Lane): void {
     if (lane.queue.length === 0 && lane.inflight.size === 0) this.lanes.delete(lane.key);
   }
 
   // ---- high-level operations (keep the HTTP layer thin) ----
 
   /**
-   * @param {number} tabId
-   * @param {string[]|null} [events] selectors or preset names; null → DEFAULT_EVENTS
-   * @param {boolean} [sessions] also flat auto-attach, so out-of-process iframes
-   *   become addressable. Implies the `targets` preset — without those events the
-   *   pool cannot be maintained, and a caller asking for sessions but not getting
+   * @param tabId
+   * @param events selectors or preset names; null → DEFAULT_EVENTS
+   * @param sessions also flat auto-attach, so out-of-process iframes become
+   *   addressable. Implies the `targets` preset — without those events the pool
+   *   cannot be maintained, and a caller asking for sessions but not getting
    *   Target events would silently get an empty pool.
    */
-  async attach(tabId, events, sessions = false) {
+  async attach(tabId: number, events: string[] | null, sessions = false): Promise<ExtResult> {
     const requested = events ?? null;
     const withTargets = sessions ? [...(requested ?? DEFAULT_EVENTS), "targets"] : requested;
     const selectors = expandEventSelectors(withTargets);
@@ -255,10 +349,10 @@ export class ExtConn {
    * Replace a tab's event subscription wholesale. Declarative on purpose: the
    * daemon pushes the desired end state and the ext diffs it, so a reconnect is
    * repaired by re-pushing rather than by replaying a history of changes.
-   * @param {number} tabId @param {string[]} events
    */
-  async setEvents(tabId, events) {
-    if (!this.attachedTabs.has(tabId)) throw httpError(409, `tab ${tabId} not attached`, { code: "TAB_NOT_ATTACHED" });
+  async setEvents(tabId: number, events: string[]): Promise<ExtResult> {
+    if (!this.attachedTabs.has(tabId))
+      throw httpError(409, `tab ${tabId} not attached`, { code: "TAB_NOT_ATTACHED" });
     const selectors = expandEventSelectors(events);
     const r = await this.callExt({ type: "events.set", tabId, events: selectors });
     if (!r.ok) return r;
@@ -266,13 +360,11 @@ export class ExtConn {
     return { ok: true, result: { events: selectors, ...(r.result || {}) } };
   }
 
-  /** @param {number} tabId @returns {string[]} */
-  subscription(tabId) {
+  subscription(tabId: number): string[] {
     return this.subscriptions.get(tabId) ?? [];
   }
 
-  /** @param {number} tabId */
-  async detach(tabId) {
+  async detach(tabId: number): Promise<ExtResult> {
     if (!this.attachedTabs.has(tabId)) return { ok: true };
     const r = await this.callExt({ type: "detach", tabId });
     this.attachedTabs.delete(tabId);
@@ -282,19 +374,26 @@ export class ExtConn {
   }
 
   /**
-   * @param {number} tabId
-   * @param {string} method
-   * @param {any} [params]
-   * @param {{ordered?:boolean, timeoutMs?:number, sessionId?:string}} [opts]
-   *   ordered   — override the UNORDERED_CDP_METHODS classification
-   *   timeoutMs — override the daemon-wide command timeout
-   *   sessionId — address a flat auto-attached session (an OOPIF or worker)
-   *               instead of the tab's own session
+   * @param opts.ordered override the UNORDERED_CDP_METHODS classification
+   * @param opts.timeoutMs override the daemon-wide command timeout
+   * @param opts.sessionId address a flat auto-attached session (an OOPIF or
+   *   worker) instead of the tab's own session
    */
-  async sendCdp(tabId, method, params, opts = {}) {
-    if (!this.attachedTabs.has(tabId)) throw httpError(409, `tab ${tabId} not attached`, { code: "TAB_NOT_ATTACHED" });
+  async sendCdp(
+    tabId: number,
+    method: string,
+    params?: any,
+    opts: { ordered?: boolean; timeoutMs?: number; sessionId?: string } = {},
+  ): Promise<ExtResult> {
+    if (!this.attachedTabs.has(tabId))
+      throw httpError(409, `tab ${tabId} not attached`, { code: "TAB_NOT_ATTACHED" });
     const exclusive = opts.ordered ?? !UNORDERED_CDP_METHODS.has(method);
-    const msg = { type: "cdp", tabId, method, params: params ?? {} };
+    const msg: { type: string; tabId: number; method: string; params: any; sessionId?: string } = {
+      type: "cdp",
+      tabId,
+      method,
+      params: params ?? {},
+    };
     if (opts.sessionId) msg.sessionId = opts.sessionId;
     // Lane is still the tab: an OOPIF's session shares the tab's focus, dialogs,
     // and navigation, so ordering has to be decided at tab granularity.
@@ -309,13 +408,12 @@ export class ExtConn {
    * `active: false` is the whole point: Chrome activates and foregrounds any tab
    * opened by a user gesture, which interrupts someone actually using the
    * browser. This is the browser lane, not a tab lane; there is no tab yet.
-   * @param {string} url
    */
-  async openTab(url) {
+  async openTab(url: string): Promise<ExtResult> {
     return this.callExt({ type: "open-tab", url });
   }
 
-  async listTabs() {
+  async listTabs(): Promise<ExtResult> {
     const r = await this.callExt({ type: "list-tabs" });
     if (r.ok) this.tabs = r.result?.tabs || [];
     return r;
@@ -323,9 +421,8 @@ export class ExtConn {
 
   // ---- inbound message dispatch ----
 
-  /** @param {string} raw */
-  _onMessage(raw) {
-    let m;
+  _onMessage(raw: string): void {
+    let m: any;
     try {
       m = JSON.parse(raw);
     } catch {
@@ -356,18 +453,18 @@ export class ExtConn {
     this._log(`[${this.name}] message with neither id nor type — dropping`);
   }
 
-  /** @param {any} m */
-  _handlePush(m) {
+  _handlePush(m: any): void {
     switch (m.type) {
       case "hello":
-        return this._handleHello(m);
+        this._handleHello(m);
+        return;
       case "tabs-changed":
         this.tabs = Array.isArray(m.tabs) ? m.tabs : [];
         return;
       case "event":
         if (typeof m.tabId === "number") {
           this._trackSession(m.tabId, m.method, m.params);
-          const ev = { method: m.method, params: m.params, ts: Date.now() };
+          const ev: CachedEvent = { method: m.method, params: m.params, ts: Date.now() };
           if (m.sessionId) ev.sessionId = m.sessionId; // came from an OOPIF/worker session
           this.cacheEvent(m.tabId, ev);
           if (DIRTY_EVENT_METHODS.has(m.method)) this.bumpRevision(m.tabId, m.method, ev.ts);
@@ -396,10 +493,11 @@ export class ExtConn {
     }
   }
 
-  /** @param {any} m */
-  _handleHello(m) {
+  _handleHello(m: any): void {
     if (m.version !== PROTOCOL_VERSION) {
-      this._log(`[${this.name}] hello version mismatch: got ${m.version}, want ${PROTOCOL_VERSION}; closing`);
+      this._log(
+        `[${this.name}] hello version mismatch: got ${m.version}, want ${PROTOCOL_VERSION}; closing`,
+      );
       this.close(4000, "version mismatch");
       return;
     }
@@ -413,7 +511,9 @@ export class ExtConn {
     this.tabs = Array.isArray(m.tabs) ? m.tabs : [];
     const wasHelloed = this.helloed;
     this.helloed = true;
-    this._log(`[${this.name}] hello ok (${this.tabs.length} tabs)${wasHelloed ? " [re-hello]" : ""}`);
+    this._log(
+      `[${this.name}] hello ok (${this.tabs.length} tabs)${wasHelloed ? " [re-hello]" : ""}`,
+    );
     this._onHello(this); // registry registers under this.id (may kick a same-id stale conn)
   }
 
@@ -423,13 +523,12 @@ export class ExtConn {
   // pool then reflects browser reality rather than a list we tried to keep in
   // step by hand. Nothing here polls.
 
-  /** @param {number} tabId @param {string} method @param {any} params */
-  _trackSession(tabId, method, params) {
+  _trackSession(tabId: number, method: string, params: any): void {
     if (!method.startsWith("Target.") || !params) return;
     if (method === "Target.attachedToTarget") {
       const info = params.targetInfo || {};
       if (!params.sessionId || !info.targetId) return;
-      const pool = this.sessions.get(tabId) ?? new Map();
+      const pool = this.sessions.get(tabId) ?? new Map<string, SessionInfo>();
       pool.set(info.targetId, {
         sessionId: params.sessionId,
         targetId: info.targetId,
@@ -446,7 +545,8 @@ export class ExtConn {
       // detachedFromTarget carries sessionId and (usually) targetId. Fall back to
       // a sessionId scan so a payload without targetId still evicts.
       const targetId =
-        params.targetId ?? [...pool.values()].find((x) => x.sessionId === params.sessionId)?.targetId;
+        params.targetId ??
+        [...pool.values()].find((x) => x.sessionId === params.sessionId)?.targetId;
       if (targetId) pool.delete(targetId);
       if (pool.size === 0) this.sessions.delete(tabId);
       return;
@@ -458,18 +558,17 @@ export class ExtConn {
     }
   }
 
-  /** @param {number} tabId @returns {Array<any>} */
-  sessionList(tabId) {
+  sessionList(tabId: number): SessionInfo[] {
     return [...(this.sessions.get(tabId)?.values() ?? [])];
   }
 
   /**
    * Turn on flat auto-attach for a tab. Idempotent — Target.setAutoAttach is,
    * and re-sending it is how a caller repairs the pool after a reload.
-   * @param {number} tabId
    */
-  async enableSessions(tabId) {
-    if (!this.attachedTabs.has(tabId)) throw httpError(409, `tab ${tabId} not attached`, { code: "TAB_NOT_ATTACHED" });
+  async enableSessions(tabId: number): Promise<ExtResult> {
+    if (!this.attachedTabs.has(tabId))
+      throw httpError(409, `tab ${tabId} not attached`, { code: "TAB_NOT_ATTACHED" });
     const r = await this.sendCdp(tabId, "Target.setAutoAttach", {
       autoAttach: true,
       flatten: true,
@@ -483,19 +582,14 @@ export class ExtConn {
 
   // ---- page revision ----
 
-  /** @param {number} tabId @param {string} method @param {number} ts */
-  bumpRevision(tabId, method, ts) {
+  bumpRevision(tabId: number, method: string, ts: number): void {
     const st = this.pageState.get(tabId) ?? { revision: 0, lastDirty: null };
     st.revision++;
     st.lastDirty = { method, ts };
     this.pageState.set(tabId, st);
   }
 
-  /**
-   * @param {number} tabId
-   * @returns {{tabId:number, attached:boolean, revision:number, lastDirty:any, events:string[], url:string}}
-   */
-  page(tabId) {
+  page(tabId: number): PageInfo {
     const st = this.pageState.get(tabId) ?? { revision: 0, lastDirty: null };
     const tab = this.tabs.find((t) => t.tabId === tabId);
     return {
@@ -510,8 +604,7 @@ export class ExtConn {
 
   // ---- event cache (per tab) ----
 
-  /** @param {number} tabId @param {{method:string,params:any,ts:number}} ev */
-  cacheEvent(tabId, ev) {
+  cacheEvent(tabId: number, ev: CachedEvent): void {
     let rb = this.events.get(tabId);
     if (!rb) {
       rb = new RingBuffer(EVENT_CACHE_CAP);
@@ -524,17 +617,17 @@ export class ExtConn {
    * Incremental read. `since` is a previous read's `nextSeq`; 0 pulls everything
    * still held. `truncated` says the ring overwrote events the caller had not
    * seen yet — the difference between "nothing happened" and "you missed it".
-   * @param {number} tabId
-   * @param {{since?:number, filterRe?:RegExp|null}} [opts]
    */
-  readEvents(tabId, { since = 0, filterRe = null } = {}) {
+  readEvents(
+    tabId: number,
+    { since = 0, filterRe = null }: { since?: number; filterRe?: RegExp | null } = {},
+  ): { events: any[]; nextSeq: number; dropped: number; truncated: boolean } {
     const rb = this.events.get(tabId);
     if (!rb) return { events: [], nextSeq: 0, dropped: 0, truncated: false };
     return rb.readSince(since, filterRe ? (e) => filterRe.test(e.method) : undefined);
   }
 
-  /** @param {number} tabId */
-  clearTabCache(tabId) {
+  clearTabCache(tabId: number): void {
     this.events.delete(tabId);
     // The revision counts changes to a page we were watching. Detaching or
     // re-attaching ends that observation, so the count starts over rather than
@@ -545,7 +638,7 @@ export class ExtConn {
     this.sessions.delete(tabId);
   }
 
-  eventCount() {
+  eventCount(): number {
     let n = 0;
     for (const rb of this.events.values()) n += rb.length;
     return n;
@@ -555,19 +648,22 @@ export class ExtConn {
 
   /**
    * Fail every command belonging to one tab, leaving the other lanes running.
-   * @param {number} tabId @param {string} reason
    */
-  failTab(tabId, reason) {
+  failTab(tabId: number, reason: string): void {
     const lane = this.lanes.get(tabId);
     if (!lane) return;
     const queued = lane.queue.splice(0);
-    for (const e of queued) e.reject(httpError(409, reason, { code: "TAB_DETACHED", retriable: true }));
-    for (const id of [...lane.inflight]) this._settle(id, (w) => w.reject(httpError(409, reason, { code: "TAB_DETACHED", retriable: true })));
+    for (const e of queued)
+      e.reject(httpError(409, reason, { code: "TAB_DETACHED", retriable: true }));
+    for (const id of [...lane.inflight])
+      this._settle(id, (w) =>
+        w.reject(httpError(409, reason, { code: "TAB_DETACHED", retriable: true })),
+      );
     this._reapLane(lane);
   }
 
-  /** Reject every queued + in-flight command. Idempotent. @param {string} reason */
-  failAll(reason) {
+  /** Reject every queued + in-flight command. Idempotent. */
+  failAll(reason: string): void {
     // Drain the queues first: settling an in-flight command pumps its lane, and a
     // lane with work left would happily dispatch it down a connection we are in
     // the middle of tearing down.
@@ -575,12 +671,13 @@ export class ExtConn {
       const queued = lane.queue.splice(0);
       for (const e of queued) e.reject(httpError(503, reason, { code: "EXT_DISCONNECTED" }));
     }
-    for (const id of [...this.inflight.keys()]) this._settle(id, (w) => w.reject(httpError(503, reason, { code: "EXT_DISCONNECTED" })));
+    for (const id of [...this.inflight.keys()])
+      this._settle(id, (w) => w.reject(httpError(503, reason, { code: "EXT_DISCONNECTED" })));
     this.lanes.clear();
   }
 
-  /** Actively close this connection. @param {number} code @param {string} reason */
-  close(code, reason) {
+  /** Actively close this connection. */
+  close(code: number, reason: string): void {
     this.failAll(reason || "closed");
     try {
       this.ws.close(code, reason);
@@ -589,7 +686,7 @@ export class ExtConn {
     }
   }
 
-  _handleClose() {
+  _handleClose(): void {
     if (this._closed) return;
     this._closed = true;
     this._log(`[${this.name}] disconnected`);
@@ -597,11 +694,3 @@ export class ExtConn {
     this._onClose(this);
   }
 }
-
-/**
- * @typedef {Object} Lane
- * @property {number|string} key
- * @property {Set<number>} inflight
- * @property {boolean} orderedInflight
- * @property {Array<{id:number,msg:any,ordered:boolean,resolve:Function,reject:Function}>} queue
- */

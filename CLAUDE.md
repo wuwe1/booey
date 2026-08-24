@@ -24,9 +24,9 @@ npm test                                          # integration test (see Testin
 npm run typecheck                                 # tsc --noEmit — strict, no emit step
 npm run lint / npm run format                     # biome (lint / format)
 
-node daemon/server.mjs [port]                     # run the daemon (default 9223)
-node daemon/test-mock-ext.mjs <port> <id> <label> # a fake browser (protocol test double)
-cli/cdp-relay <command> [--browser <id|label>] [--port N]   # the CLI; `cli/cdp-relay help`
+node daemon/server.ts [port]                     # run the daemon (default 9224)
+node daemon/test-mock-ext.ts <port> <id> <label> # a fake browser (protocol test double)
+node cli/cdp-relay.ts <command> [--browser <id|label>] [--port N]   # the CLI; `cli/cdp-relay help`
 ```
 
 There is **no build or emit step** — Node ≥22.18 runs `.ts` directly via type
@@ -38,16 +38,16 @@ stripping. Validation = `npm run typecheck` + `npm run lint` + `npm test` green.
 clients/ts/         the supported typed client — ships with the protocol,
                     not vendored per consumer. Node runs the .ts directly.
 daemon/
-  config.mjs        protocol constants + event presets + selector expansion
-  http-error.mjs    Error + httpCode + machine-readable `code` / `retriable`
-  ring-buffer.mjs   O(1) fixed-capacity FIFO (event cache)
-  ext-conn.mjs      ExtConn — one browser: serial scheduler + attach + event cache
-  registry.mjs      ExtRegistry — Map<id,ExtConn> + selector (id|label) resolution
-  server.mjs        HTTP + WS bootstrap; thin router that delegates to ExtConn
-  test-mock-ext.mjs protocol test double; pass id/label to simulate a browser
+  config.ts        protocol constants + event presets + selector expansion
+  http-error.ts    Error + httpCode + machine-readable `code` / `retriable`
+  ring-buffer.ts   O(1) fixed-capacity FIFO (event cache)
+  ext-conn.ts      ExtConn — one browser: serial scheduler + attach + event cache
+  registry.ts      ExtRegistry — Map<id,ExtConn> + selector (id|label) resolution
+  server.ts        HTTP + WS bootstrap; thin router that delegates to ExtConn
+  test-mock-ext.ts protocol test double; pass id/label to simulate a browser
 extension/          MV3: background.js (identity + WS client + debugger bridge),
                     offscreen-heartbeat.{html,js}, popup.{html,js}, manifest.json
-cli/cdp-relay       Node CLI over the HTTP API
+cli/cdp-relay.ts    Node CLI over the HTTP API
 test/integration.mjs  protocol-level end-to-end harness
 test/client.mjs       drives clients/ts against the daemon
 test/compat-lilto.mjs drives lilto's OWN client (a frozen copy) — see below
@@ -62,7 +62,7 @@ docs/SPEC.md        protocol contract (authoritative)
 - **Concurrency is three-level** (v3): browsers parallel (separate `ExtConn`s),
   tabs parallel (separate lanes inside one `ExtConn`), and within a tab ordered
   commands serialize while listed reads overlap. Classification lives in
-  `UNORDERED_CDP_METHODS` (`daemon/config.mjs`) and **defaults to ordered** — add
+  `UNORDERED_CDP_METHODS` (`daemon/config.ts`) and **defaults to ordered** — add
   a method there only if it is a pure read with no focus/input/navigation
   semantics. Do **not** introduce a shared/global command queue.
 - **Every command carries a message id**; `_settle(id, …)` is the single exit
@@ -77,7 +77,7 @@ docs/SPEC.md        protocol contract (authoritative)
   and drops unsubscribed events **before stringify/send/store**. Ownership is
   per-tab last-writer-wins — do not add refcounting. `Runtime` stays off by
   default: `Runtime.evaluate` is a command and does not need the domain enabled.
-- **Event cache** is a per-`(browserId, tabId)` ring buffer (`ring-buffer.mjs`),
+- **Event cache** is a per-`(browserId, tabId)` ring buffer (`ring-buffer.ts`),
   O(1) push, with monotonic seq. `/events?since=` is an incremental pull;
   `truncated` tells the caller the ring ate events it had not read. Never drop
   that flag — losing events and nothing happening must not look identical.
@@ -113,7 +113,7 @@ processes and asserts multi-browser addressing (by id and label), error codes
 three concurrency levels, response pairing across a give-up, detach-cancels-
 inflight, event subscription/filtering, the `/events` cursor, the CLI round-trip,
 and same-id reconnect. `npm test` runs three suites in order — expect
-`PASS=50` (protocol), `PASS=28` (client), `PASS=16` (lilto compat), all
+`PASS=51` (protocol), `PASS=51` (client), `PASS=16` (lilto compat), all
 `FAIL=0`, exit 0.
 
 The daemon under test runs with `CDP_RELAY_CMD_TIMEOUT_MS=500` (give-up path)
@@ -147,8 +147,8 @@ the `/events` cursor without reattaching.
   import with real `.ts` extensions. JSDoc stays where it helps editors. Keep
   runtime deps near-zero (`ws` only); typecheck/lint tooling is dev-only.
 - **Protocol changes are a four-file edit:** bump `PROTOCOL_VERSION` in
-  `daemon/config.mjs`, `extension/background.js`, **and**
-  `daemon/test-mock-ext.mjs` (all must match, or the daemon closes with code
+  `daemon/config.ts`, `extension/background.js`, **and**
+  `daemon/test-mock-ext.ts` (all must match, or the daemon closes with code
   `4000`), then update `docs/SPEC.md`. A daemon and extension on mismatched
   versions will not talk.
 - **Keep `docs/SPEC.md` in sync** with any change to the WS messages, HTTP
@@ -168,7 +168,7 @@ the `/events` cursor without reattaching.
   rather than returning an empty list that reads like "no requests happened".
 - **`Network.disable` drops the response-body buffer** — fetch bodies before
   narrowing a subscription away from Network.
-- **`hello` must carry a non-empty `id` and `version: 2`**, else the daemon closes
+- **`hello` must carry a non-empty `id` and the current `version`**, else the daemon closes
   `4000` and the extension stops reconnecting permanently.
 - **One debugger per tab.** If the user opens DevTools on an attached tab, Chrome
   detaches us (`onDetach`).

@@ -73,13 +73,13 @@ const chkc = (n, got, sub) => {
 };
 
 try {
-  spawnNode(["daemon/server.mjs", String(PORT)]);
+  spawnNode(["daemon/server.ts", String(PORT)]);
   // The mock ext has no reconnect: if it is spawned before the daemon is
   // listening it takes an ECONNREFUSED and exits. Wait for the port first.
   if (!(await pollUntil(async () => (await fetch(`http://127.0.0.1:${PORT}/status`)).ok))) {
     throw new Error("daemon never came up");
   }
-  spawnNode(["daemon/test-mock-ext.mjs", String(PORT), "browser-A", "shopee-A"]);
+  spawnNode(["daemon/test-mock-ext.ts", String(PORT), "browser-A", "shopee-A"]);
 
   const relay = new RelayClient({ base: `http://127.0.0.1:${PORT}`, browser: "shopee-A" });
   if (!(await pollUntil(async () => (await relay.browsers()).length === 1)))

@@ -29,7 +29,11 @@ const LABEL = process.argv[4] || "";
 const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ext`);
 
 const FAKE_TABS = [
-  { tabId: 1001, url: "https://seller.shopee.tw/portal/product/list", title: `${LABEL || ID} 賣場` },
+  {
+    tabId: 1001,
+    url: "https://seller.shopee.tw/portal/product/list",
+    title: `${LABEL || ID} 賣場`,
+  },
   { tabId: 1002, url: "chrome://newtab/", title: "New Tab" },
 ];
 
@@ -39,10 +43,13 @@ const FRESH_ONLY_TAB = { tabId: 1999, url: "mock://fresh-only", title: "only via
 /** tabId → {exact:Set, wild:Set, domains:Set} — mirrors the real ext's filter */
 const subs = new Map();
 
-function setSubscription(tabId, selectors) {
-  const exact = new Set();
-  const wild = new Set();
-  const domains = new Set();
+function setSubscription(
+  tabId: number,
+  selectors: string[],
+): { enabled: string[]; failed: { domain: string; message: string }[] } {
+  const exact = new Set<string>();
+  const wild = new Set<string>();
+  const domains = new Set<string>();
   for (const sel of selectors || []) {
     const dot = sel.indexOf(".");
     const domain = sel.slice(0, dot);
@@ -53,14 +60,16 @@ function setSubscription(tabId, selectors) {
   subs.set(tabId, { exact, wild, domains });
   // A domain the real ext could not enable comes back as `failed`; "Bogus" is
   // the mock's stand-in for a typo'd domain name.
-  const failed = [...domains].filter((d) => d === "Bogus").map((d) => ({ domain: d, message: `'${d}.enable' wasn't found` }));
+  const failed = [...domains]
+    .filter((d) => d === "Bogus")
+    .map((d) => ({ domain: d, message: `'${d}.enable' wasn't found` }));
   // Target is skipped rather than enabled, mirroring NO_ENABLE_DOMAINS in the
   // extension: it must appear in NEITHER list.
   const enabled = [...domains].filter((d) => d !== "Bogus" && d !== "Target").sort();
   return { enabled, failed };
 }
 
-function subscribed(tabId, method) {
+function subscribed(tabId: number, method: string): boolean {
   const e = subs.get(tabId);
   if (!e) return false;
   if (e.exact.has(method)) return true;
@@ -73,22 +82,25 @@ ws.on("open", () => {
   send({ type: "hello", version: PROTOCOL_VERSION, id: ID, label: LABEL, tabs: FAKE_TABS });
 });
 
-function send(msg) {
+function send(msg: any): void {
   ws.send(JSON.stringify(msg));
 }
 
 // Emits the same three Network events plus one Page event, each only if the
 // tab's subscription covers it — the filter is the ext's job, so the double
 // must do it too or the test asserts nothing.
-function pushFakeEvents(tabId) {
+function pushFakeEvents(tabId: number): void {
   setTimeout(() => {
-    const emit = (method, params) => {
+    const emit = (method: string, params: any) => {
       if (subscribed(tabId, method)) send({ type: "event", tabId, method, params });
     };
     emit("Page.loadEventFired", { timestamp: Date.now() / 1000 });
     emit("Network.requestWillBeSent", {
       requestId: "REQ-001",
-      request: { method: "GET", url: "https://seller.shopee.tw/api/v3/opt/mpsku/list/v2/get_product_extensive_info" },
+      request: {
+        method: "GET",
+        url: "https://seller.shopee.tw/api/v3/opt/mpsku/list/v2/get_product_extensive_info",
+      },
       type: "XHR",
       timestamp: Date.now() / 1000,
     });
@@ -105,7 +117,7 @@ function pushFakeEvents(tabId) {
 }
 
 /** The answer this method would give, ignoring timing. */
-function resultFor(m) {
+function resultFor(m: any): any {
   switch (m.method) {
     case "Runtime.evaluate":
       // An expression containing THROW comes back shaped like a real page
@@ -113,26 +125,32 @@ function resultFor(m) {
       if (String(m.params?.expression || "").includes("THROW")) {
         return {
           result: { type: "object", subtype: "error" },
-          exceptionDetails: { text: "Uncaught", exception: { description: "Error: mock page blew up" } },
+          exceptionDetails: {
+            text: "Uncaught",
+            exception: { description: "Error: mock page blew up" },
+          },
         };
       }
       return { result: { type: "string", value: `${LABEL || ID} (mock)` } };
     case "Network.getResponseBody":
       return { body: '{"data":{"products":[]},"code":0}', base64Encoded: false };
     case "Page.captureScreenshot":
-      return { data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkAAIAAAoAAv/lxKUAAAAASUVORK5CYII=" };
+      return {
+        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkAAIAAAoAAv/lxKUAAAAASUVORK5CYII=",
+      };
     default:
       return { mock: true, method: m.method };
   }
 }
 
 /** @returns {Promise<any>|any} the `result` payload, or null to answer nothing */
-function runCdp(m) {
+function runCdp(m: any): any {
   if (m.method === "Test.noReply") return null;
   // Chrome has no Target.enable — Target events come from setAutoAttach. The
   // real browser answers -32601, so the double must too, or the extension's
   // NO_ENABLE_DOMAINS skip has nothing holding it in place.
-  if (m.method === "Target.enable") throw new Error(`{"code":-32601,"message":"'Target.enable' wasn't found"}`);
+  if (m.method === "Target.enable")
+    throw new Error(`{"code":-32601,"message":"'Target.enable' wasn't found"}`);
   if (m.method === "Target.setAutoAttach") {
     // Announce one fake OOPIF, the way a real browser would on auto-attach.
     if (subscribed(m.tabId, "Target.attachedToTarget")) {
@@ -186,7 +204,7 @@ function runCdp(m) {
 
 // Mirrors the real ext: no per-command serialization here. Whatever the daemon
 // sends concurrently is handled concurrently, and every response quotes its id.
-async function handleCommand(m) {
+async function handleCommand(m: any): Promise<any> {
   switch (m.type) {
     case "list-tabs":
       // FRESH_ONLY_TAB is returned by an actual list-tabs round-trip but never
@@ -226,8 +244,12 @@ async function handleCommand(m) {
 }
 
 ws.on("message", (data) => {
-  let m;
-  try { m = JSON.parse(data.toString("utf8")); } catch { return; }
+  let m: any;
+  try {
+    m = JSON.parse(data.toString("utf8"));
+  } catch {
+    return;
+  }
   if (m.type === "ping") {
     send({ type: "pong", stats: { matchedEvents: 0, filteredEvents: 0, droppedEvents: 0 } });
     return;
@@ -252,6 +274,6 @@ ws.on("close", (code, reason) => {
 });
 ws.on("error", (e) => log("error:", e.message));
 
-function log(...args) {
+function log(...args: any[]): void {
   console.error(`[mock-ext ${LABEL || ID}]`, ...args);
 }

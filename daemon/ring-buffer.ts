@@ -10,18 +10,24 @@
 // `truncated` is how that silence becomes visible to the caller.
 
 export class RingBuffer {
-  /** @param {number} cap */
-  constructor(cap) {
+  cap: number;
+  buf: any[];
+  /** Index of the oldest element. */
+  start: number;
+  /** Number of live elements (≤ cap). */
+  length: number;
+  /** Total ever pushed; also the seq of the newest element. */
+  pushed: number;
+
+  constructor(cap: number) {
     this.cap = cap;
-    /** @type {Array<any>} */
     this.buf = new Array(cap);
-    this.start = 0; // index of oldest element
-    this.length = 0; // number of live elements (≤ cap)
-    this.pushed = 0; // total ever pushed; also the seq of the newest element
+    this.start = 0;
+    this.length = 0;
+    this.pushed = 0;
   }
 
-  /** @param {any} x */
-  push(x) {
+  push(x: any): void {
     this.pushed++;
     const end = (this.start + this.length) % this.cap;
     if (this.length < this.cap) {
@@ -35,22 +41,24 @@ export class RingBuffer {
   }
 
   /** How many elements were overwritten before a reader could see them. */
-  get dropped() {
+  get dropped(): number {
     return this.pushed - this.length;
   }
 
   /** Sequence number of the oldest element still held (1-based; 1 when empty). */
-  get oldestSeq() {
+  get oldestSeq(): number {
     return this.pushed - this.length + 1;
   }
 
   /**
    * Elements newer than `since`, each tagged with its seq.
-   * @param {number} [since] the `nextSeq` from a previous read; 0 for everything held
-   * @param {(x:any)=>boolean} [match] optional per-element filter
-   * @returns {{events:any[], nextSeq:number, dropped:number, truncated:boolean}}
+   * @param since the `nextSeq` from a previous read; 0 for everything held
+   * @param match optional per-element filter
    */
-  readSince(since = 0, match) {
+  readSince(
+    since = 0,
+    match?: (x: any) => boolean,
+  ): { events: any[]; nextSeq: number; dropped: number; truncated: boolean } {
     const oldest = this.oldestSeq;
     // The reader wanted everything after `since`, but the oldest we still hold is
     // newer than that: the gap in between is gone for good.
@@ -65,8 +73,8 @@ export class RingBuffer {
     return { events, nextSeq: this.pushed, dropped: this.dropped, truncated };
   }
 
-  /** @returns {Array<any>} elements oldest→newest */
-  toArray() {
+  /** Elements oldest→newest. */
+  toArray(): any[] {
     const out = new Array(this.length);
     for (let i = 0; i < this.length; i++) {
       out[i] = this.buf[(this.start + i) % this.cap];
@@ -74,7 +82,7 @@ export class RingBuffer {
     return out;
   }
 
-  clear() {
+  clear(): void {
     this.buf = new Array(this.cap);
     this.start = 0;
     this.length = 0;

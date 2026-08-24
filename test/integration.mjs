@@ -75,7 +75,7 @@ const chkc = (n, got, sub) => {
   }
 };
 const cli = (...a) =>
-  execFileSync(process.execPath, ["cli/cdp-relay", "--port", String(PORT), ...a], {
+  execFileSync(process.execPath, ["cli/cdp-relay.ts", "--port", String(PORT), ...a], {
     cwd: ROOT,
   }).toString();
 
@@ -84,15 +84,15 @@ try {
   // reachable inside a test run. Every other command here answers instantly.
   // CMD_TIMEOUT_MS is shortened so the "daemon gave up on a command" path is
   // reachable inside a test run; the cache is shrunk so ring truncation is too.
-  spawnNode(["daemon/server.mjs", String(PORT)], {
+  spawnNode(["daemon/server.ts", String(PORT)], {
     CDP_RELAY_CMD_TIMEOUT_MS: "500",
     CDP_RELAY_EVENT_CACHE_CAP: "4",
   });
   if (!(await pollUntil(async () => (await jget("/status")).status === 200)))
     throw new Error("daemon never came up");
 
-  spawnNode(["daemon/test-mock-ext.mjs", String(PORT), "browser-A", "shopee-A"]);
-  spawnNode(["daemon/test-mock-ext.mjs", String(PORT), "browser-B", "shopee-B"]);
+  spawnNode(["daemon/test-mock-ext.ts", String(PORT), "browser-A", "shopee-A"]);
+  spawnNode(["daemon/test-mock-ext.ts", String(PORT), "browser-B", "shopee-B"]);
   if (!(await pollUntil(async () => (await jget("/browsers")).body.browsers.length === 2)))
     throw new Error("two browsers never registered");
 
@@ -319,7 +319,7 @@ try {
   chkc("CLI browsers lists B", cli("browsers"), "shopee-B");
 
   // same-id reconnect keeps identity (kicks stale, updates label)
-  spawnNode(["daemon/test-mock-ext.mjs", String(PORT), "browser-A", "shopee-A-renamed"]);
+  spawnNode(["daemon/test-mock-ext.ts", String(PORT), "browser-A", "shopee-A-renamed"]);
   const renamed = await pollUntil(async () => {
     const bs = (await jget("/browsers")).body.browsers;
     return bs.length === 2 && bs.some((b) => b.label === "shopee-A-renamed") ? bs : null;

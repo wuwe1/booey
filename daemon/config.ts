@@ -1,6 +1,6 @@
 // Shared daemon constants. See ../docs/SPEC.md for the protocol contract.
 
-import { httpError } from "./http-error.mjs";
+import { httpError } from "./http-error.ts";
 
 export const PROTOCOL_VERSION = 5; // bumped from 4: cdp commands may carry a sessionId (see SPEC.md)
 export const DEFAULT_PORT = 9224; // 9223 is used by the legacy v1 relay in listo; keep them separate
@@ -10,24 +10,26 @@ export const DEFAULT_PORT = 9224; // 9223 is used by the legacy v1 relay in list
  * on anything malformed. A bad value here is worse than no value: NaN would make
  * every command time out instantly, Infinity would make none of them ever time
  * out. Same defensive shape browser-use uses for BROWSER_USE_CDP_TIMEOUT_S.
- * @param {string} name @param {number} fallback
+ * @param name @param fallback
  */
-function envNum(name, fallback) {
+function envNum(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw == null || raw === "") return fallback;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) {
-    console.error(`[cdp-relay] ignoring ${name}=${JSON.stringify(raw)} (not a positive finite number); using ${fallback}`);
+    console.error(
+      `[cdp-relay] ignoring ${name}=${JSON.stringify(raw)} (not a positive finite number); using ${fallback}`,
+    );
     return fallback;
   }
   return n;
 }
 
 export const CMD_TIMEOUT_MS = envNum("CDP_RELAY_CMD_TIMEOUT_MS", 30_000); // per-command in-flight timeout
-export const HEARTBEAT_MS = 25_000;       // daemon→ext ping cadence (keeps MV3 SW alive)
+export const HEARTBEAT_MS = 25_000; // daemon→ext ping cadence (keeps MV3 SW alive)
 export const NO_DATA_TIMEOUT_MS = 60_000; // close a conn that goes silent this long
 export const EVENT_CACHE_CAP = envNum("CDP_RELAY_EVENT_CACHE_CAP", 1000); // per-(browser,tab) ring capacity
-export const MAX_INFLIGHT_PER_TAB = 8;    // cap on concurrent unordered commands per tab
+export const MAX_INFLIGHT_PER_TAB = 8; // cap on concurrent unordered commands per tab
 
 /**
  * CDP methods safe to run concurrently within one tab: pure reads with no focus,
@@ -85,7 +87,7 @@ export const UNORDERED_CDP_METHODS = new Set([
 // does not need the domain enabled.
 
 /** Named recipes, so callers don't reach for "Domain.*". */
-export const EVENT_PRESETS = {
+export const EVENT_PRESETS: Record<string, string[]> = {
   // Page lifecycle. Cheap, and the basis for knowing when a tab moved.
   nav: [
     "Page.frameNavigated",
@@ -144,15 +146,17 @@ const SELECTOR_RE = /^[A-Za-z][A-Za-z0-9]*\.(\*|[A-Za-z][A-Za-z0-9]*)$/;
  * list. Throws on anything unrecognized rather than silently subscribing to
  * nothing — a typo'd selector that quietly matches no events is the worst
  * possible failure here, because it looks exactly like "the page did nothing".
- * @param {unknown} input
+ * @param input
  * @returns {string[]}
  */
-export function expandEventSelectors(input) {
+export function expandEventSelectors(input: unknown): string[] {
   if (input == null) return expandEventSelectors(DEFAULT_EVENTS);
-  if (!Array.isArray(input)) throw httpError(400, "events must be an array of selectors or preset names");
-  const out = new Set();
+  if (!Array.isArray(input))
+    throw httpError(400, "events must be an array of selectors or preset names");
+  const out = new Set<string>();
   for (const raw of input) {
-    if (typeof raw !== "string" || !raw) throw httpError(400, `bad event selector: ${JSON.stringify(raw)}`);
+    if (typeof raw !== "string" || !raw)
+      throw httpError(400, `bad event selector: ${JSON.stringify(raw)}`);
     const preset = EVENT_PRESETS[raw];
     if (preset) {
       for (const sel of preset) out.add(sel);
@@ -170,6 +174,6 @@ export function expandEventSelectors(input) {
 }
 
 /** The CDP domains that must be enabled to produce these selectors. */
-export function domainsForSelectors(selectors) {
+export function domainsForSelectors(selectors: string[]): string[] {
   return [...new Set(selectors.map((s) => s.slice(0, s.indexOf("."))))].sort();
 }

@@ -43,19 +43,19 @@ mode → "Load unpacked" → select `extension/`. Open the popup and set a **lab
 
 ```sh
 # 1. start the daemon (one, shared by all browsers)
-cli/cdp-relay daemon start
+node cli/cdp-relay.ts daemon start
 
 # 2. see who's connected
-cli/cdp-relay browsers
+node cli/cdp-relay.ts browsers
 # → [{ "id": "…", "label": "shopee-A", "attached": [], "tabCount": 7 }, …]
 
 # 3. list tabs in a specific browser, attach, and run JS
-cli/cdp-relay tabs --browser shopee-A
-cli/cdp-relay attach 1734 --browser shopee-A
-cli/cdp-relay eval 1734 "document.title" --browser shopee-A
+node cli/cdp-relay.ts tabs --browser shopee-A
+node cli/cdp-relay.ts attach 1734 --browser shopee-A
+node cli/cdp-relay.ts eval 1734 "document.title" --browser shopee-A
 
 # 4. another browser, in parallel — independent scheduler
-cli/cdp-relay eval 980 "location.href" --browser shopee-B
+node cli/cdp-relay.ts eval 980 "location.href" --browser shopee-B
 ```
 
 When only **one** browser is connected, `--browser` is optional. Set
@@ -93,9 +93,9 @@ resolved value. Branch on `.code`, never on the message text.
 ## Testing without a real browser
 
 ```sh
-node daemon/server.mjs 9229 &
-node daemon/test-mock-ext.mjs 9229 browser-A shopee-A &
-node daemon/test-mock-ext.mjs 9229 browser-B shopee-B &
-cli/cdp-relay --port 9229 browsers
-cli/cdp-relay --port 9229 eval 1001 "x" --browser shopee-A
+node daemon/server.ts 9229 &
+node daemon/test-mock-ext.ts 9229 browser-A shopee-A &
+node daemon/test-mock-ext.ts 9229 browser-B shopee-B &
+node cli/cdp-relay.ts --port 9229 browsers
+node cli/cdp-relay.ts --port 9229 eval 1001 "x" --browser shopee-A
 ```

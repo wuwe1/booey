@@ -20,7 +20,11 @@
   },
   "linter": {
     "enabled": true,
-    "rules": { "preset": "recommended" }
+    "rules": {
+      "preset": "recommended",
+      "suspicious": { "noExplicitAny": "warn" },
+      "style": { "noNonNullAssertion": "warn" }
+    }
   },
   "javascript": {
     "formatter": {

@@ -7,14 +7,14 @@
 
 import http from "node:http";
 import { WebSocketServer } from "ws";
-import { ExtConn } from "./ext-conn.mjs";
-import { ExtRegistry } from "./registry.mjs";
-import { httpError } from "./http-error.mjs";
-import { PROTOCOL_VERSION, DEFAULT_PORT, HEARTBEAT_MS, NO_DATA_TIMEOUT_MS } from "./config.mjs";
+import { DEFAULT_PORT, HEARTBEAT_MS, NO_DATA_TIMEOUT_MS, PROTOCOL_VERSION } from "./config.ts";
+import { ExtConn } from "./ext-conn.ts";
+import { httpError } from "./http-error.ts";
+import { ExtRegistry } from "./registry.ts";
 
 const PORT = Number(process.env.CDP_RELAY_PORT || process.argv[2] || DEFAULT_PORT);
 
-function log(...args) {
+function log(...args: any[]): void {
   console.error(`[cdp-relay ${new Date().toISOString()}]`, ...args);
 }
 
@@ -22,9 +22,9 @@ const registry = new ExtRegistry({ log });
 
 // ---- http helpers ----
 
-function readBody(req) {
+function readBody(req: http.IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
-    const chunks = [];
+    const chunks: Buffer[] = [];
     req.on("data", (c) => chunks.push(c));
     req.on("end", () => {
       const s = Buffer.concat(chunks).toString("utf8");
@@ -39,12 +39,12 @@ function readBody(req) {
   });
 }
 
-function sendJson(res, code, body) {
+function sendJson(res: http.ServerResponse, code: number, body: any): void {
   res.writeHead(code, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
 }
 
-function num(v) {
+function num(v: string | null): number {
   const n = Number(v);
   if (!Number.isFinite(n)) throw httpError(400, "tabId must be a number");
   return n;
@@ -62,13 +62,14 @@ function statusSnapshot() {
 
 // ---- routing ----
 
-async function handleHttp(req, res) {
-  const url = new URL(req.url, `http://localhost:${PORT}`);
-  const method = req.method.toUpperCase();
+async function handleHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
+  const method = (req.method ?? "GET").toUpperCase();
   const path = url.pathname;
 
   // Endpoints that don't target a specific browser.
-  if (method === "GET" && path === "/browsers") return sendJson(res, 200, { browsers: registry.list() });
+  if (method === "GET" && path === "/browsers")
+    return sendJson(res, 200, { browsers: registry.list() });
   if (method === "GET" && path === "/status") return sendJson(res, 200, statusSnapshot());
   if (method === "POST" && path === "/shutdown") {
     sendJson(res, 200, { ok: true });
@@ -98,7 +99,7 @@ async function handleHttp(req, res) {
       try {
         re = new RegExp(filter);
       } catch (e) {
-        throw httpError(400, "invalid filter regex: " + e.message);
+        throw httpError(400, "invalid filter regex: " + (e as Error).message);
       }
     }
     return sendJson(res, 200, conn.readEvents(tabId, { since, filterRe: re }));
@@ -123,7 +124,11 @@ async function handleHttp(req, res) {
     const body = await readBody(req);
     if (path === "/attach") {
       const conn = registry.resolve(body.browser);
-      return sendJson(res, 200, await conn.attach(num(body.tabId), body.events ?? null, body.sessions === true));
+      return sendJson(
+        res,
+        200,
+        await conn.attach(num(body.tabId), body.events ?? null, body.sessions === true),
+      );
     }
     if (path === "/sessions/enable") {
       const conn = registry.resolve(body.browser);
@@ -157,7 +162,15 @@ async function handleHttp(req, res) {
       // out a 30s budget to find out the page is wedged.
       const timeoutMs = typeof body.timeoutMs === "number" ? body.timeoutMs : undefined;
       const sessionId = typeof body.sessionId === "string" ? body.sessionId : undefined;
-      return sendJson(res, 200, await conn.sendCdp(num(body.tabId), cdpMethod, body.params, { ordered, timeoutMs, sessionId }));
+      return sendJson(
+        res,
+        200,
+        await conn.sendCdp(num(body.tabId), cdpMethod, body.params, {
+          ordered,
+          timeoutMs,
+          sessionId,
+        }),
+      );
     }
     if (path === "/events/clear") {
       const conn = registry.resolve(body.browser);
@@ -226,7 +239,7 @@ setInterval(() => {
 }, HEARTBEAT_MS);
 
 httpServer.on("error", (e) => {
-  if (e.code === "EADDRINUSE") {
+  if ((e as NodeJS.ErrnoException).code === "EADDRINUSE") {
     log(`port ${PORT} already in use`);
     process.exit(1);
   }

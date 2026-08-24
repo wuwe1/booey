@@ -1,25 +1,25 @@
 #!/usr/bin/env node
+import { Buffer } from "node:buffer";
 // cdp-relay CLI — see ../docs/SPEC.md for protocol contract.
 //
 // Multi-browser: pick a target with --browser <id|label>. When exactly one
 // browser is connected the flag is optional (the daemon auto-selects).
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Buffer } from "node:buffer";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DAEMON_SCRIPT = resolve(__dirname, "..", "daemon", "server.mjs");
+const DAEMON_SCRIPT = resolve(__dirname, "..", "daemon", "server.ts");
 const DEFAULT_PORT = 9224; // match daemon/config.mjs; 9223 is the legacy v1 relay
 
 // ---- arg parse ----
 
-function parseArgs(argv) {
-  const args = [];
-  const flags = {};
+function parseArgs(argv: string[]): { args: string[]; flags: Record<string, any> } {
+  const args: string[] = [];
+  const flags: Record<string, any> = {};
   for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
+    const a = argv[i]!;
     if (a.startsWith("--")) {
       const eq = a.indexOf("=");
       if (eq !== -1) {
@@ -52,7 +52,7 @@ const BROWSER = flags.browser || process.env.CDP_RELAY_BROWSER || "";
 const PID_FILE = `/tmp/cdp-relay-${PORT}.pid`;
 const LOG_FILE = `/tmp/cdp-relay-${PORT}.log`;
 
-function out(obj) {
+function out(obj: any): void {
   if (PRETTY) {
     console.log(typeof obj === "string" ? obj : JSON.stringify(obj, null, 2));
   } else {
@@ -60,7 +60,7 @@ function out(obj) {
   }
 }
 
-function fail(msg, code = 1) {
+function fail(msg: string, code = 1): never {
   console.error("cdp-relay:", msg);
   process.exit(code);
 }
@@ -68,38 +68,42 @@ function fail(msg, code = 1) {
 // ---- browser selector threading ----
 
 // Append ?browser= to a GET path (when a target is specified).
-function browserQuery(extra = "") {
-  const params = [];
+function browserQuery(extra = ""): string {
+  const params: string[] = [];
   if (BROWSER) params.push(`browser=${encodeURIComponent(BROWSER)}`);
   if (extra) params.push(extra);
   return params.length ? "?" + params.join("&") : "";
 }
 
 // Add `browser` to a POST body (when a target is specified).
-function withBrowser(body) {
+function withBrowser(body: any): any {
   return BROWSER ? { ...body, browser: BROWSER } : body;
 }
 
 // ---- HTTP client ----
 
-async function api(path, opts = {}) {
+async function api(path: string, opts: RequestInit = {}): Promise<{ status: number; body: any }> {
   const url = `http://127.0.0.1:${PORT}${path}`;
-  let res;
+  let res: Response;
   try {
     res = await fetch(url, opts);
   } catch (e) {
-    fail(`daemon unreachable on :${PORT} (${e.message}). Try: cdp-relay daemon start`);
+    fail(`daemon unreachable on :${PORT} (${(e as Error).message}). Try: cdp-relay daemon start`);
   }
   const text = await res.text();
-  let body;
-  try { body = text ? JSON.parse(text) : {}; } catch { body = { raw: text }; }
+  let body: any;
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = { raw: text };
+  }
   return { status: res.status, body };
 }
 
-async function get(path) {
+async function get(path: string): Promise<{ status: number; body: any }> {
   return api(path, { method: "GET" });
 }
-async function post(path, body) {
+async function post(path: string, body: any): Promise<{ status: number; body: any }> {
   return api(path, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -107,7 +111,7 @@ async function post(path, body) {
   });
 }
 
-function ensureOk(r, ctx) {
+function ensureOk(r: { status: number; body: any }, ctx: string): any {
   if (r.status >= 400) fail(`${ctx}: HTTP ${r.status} ${r.body?.error || ""}`);
   return r.body;
 }
@@ -118,7 +122,7 @@ async function daemonStatus() {
   try {
     const res = await fetch(`http://127.0.0.1:${PORT}/status`);
     if (!res.ok) throw new Error("not ok");
-    const body = await res.json();
+    const body = (await res.json()) as any;
     return { running: true, ...body };
   } catch {
     const pid = pidFromFile();
@@ -129,7 +133,7 @@ async function daemonStatus() {
   }
 }
 
-function pidFromFile() {
+function pidFromFile(): number | null {
   if (!existsSync(PID_FILE)) return null;
   try {
     const n = Number(readFileSync(PID_FILE, "utf8").trim());
@@ -139,8 +143,13 @@ function pidFromFile() {
   }
 }
 
-function processAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function startDaemon() {
@@ -190,16 +199,20 @@ async function stopDaemon() {
     }
   }
   if (existsSync(PID_FILE)) {
-    try { unlinkSync(PID_FILE); } catch {}
+    try {
+      unlinkSync(PID_FILE);
+    } catch {}
   }
   return { ok: true, stopped };
 }
 
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 // ---- subcommands ----
 
-const cmds = {
+const cmds: Record<string, () => Promise<void>> = {
   async daemon() {
     const sub = args[1];
     if (sub === "start") return out(await startDaemon());
@@ -220,8 +233,16 @@ const cmds = {
 
   async attach() {
     const tabId = numArg(1, "tabId");
-    const events = flags.events ? String(flags.events).split(",").map((x) => x.trim()).filter(Boolean) : undefined;
-    const r = ensureOk(await post("/attach", withBrowser({ tabId, ...(events ? { events } : {}) })), "attach");
+    const events = flags.events
+      ? String(flags.events)
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean)
+      : undefined;
+    const r = ensureOk(
+      await post("/attach", withBrowser({ tabId, ...(events ? { events } : {}) })),
+      "attach",
+    );
     warnFailedDomains(r);
     out(r);
   },
@@ -235,9 +256,18 @@ const cmds = {
     }
     if (sub === "subscribe") {
       const spec = args[3];
-      if (!spec) fail("events subscribe: expected <selectors>, comma-separated (e.g. net,nav or 'Network.*')");
-      const list = spec.split(",").map((x) => x.trim()).filter(Boolean);
-      const r = ensureOk(await post("/events/subscribe", withBrowser({ tabId, events: list })), "events subscribe");
+      if (!spec)
+        fail(
+          "events subscribe: expected <selectors>, comma-separated (e.g. net,nav or 'Network.*')",
+        );
+      const list = spec
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      const r = ensureOk(
+        await post("/events/subscribe", withBrowser({ tabId, events: list })),
+        "events subscribe",
+      );
       warnFailedDomains(r);
       out(r);
       return;
@@ -254,16 +284,19 @@ const cmds = {
     const tabId = numArg(1, "tabId");
     const expression = args[2];
     if (!expression) fail("eval: expected <js>");
-    const r = await post("/send", withBrowser({
-      tabId,
-      method: "Runtime.evaluate",
-      params: {
-        expression,
-        awaitPromise: !!flags.await,
-        returnByValue: true,
-        generatePreview: true,
-      },
-    }));
+    const r = await post(
+      "/send",
+      withBrowser({
+        tabId,
+        method: "Runtime.evaluate",
+        params: {
+          expression,
+          awaitPromise: !!flags.await,
+          returnByValue: true,
+          generatePreview: true,
+        },
+      }),
+    );
     const body = ensureOk(r, "eval");
     if (body.ok === false) {
       out({ ok: false, error: body.error });
@@ -291,8 +324,11 @@ const cmds = {
       // Nothing is captured retroactively. With no Network subscription this
       // would return an empty list that reads exactly like "the page made no
       // requests" — say which one it is.
-      const subState = ensureOk(await get(`/events/subscribe${browserQuery(`tabId=${tabId}`)}`), "net list");
-      if (!(subState.events || []).some((sel) => sel.startsWith("Network."))) {
+      const subState = ensureOk(
+        await get(`/events/subscribe${browserQuery(`tabId=${tabId}`)}`),
+        "net list",
+      );
+      if (!((subState.events || []) as string[]).some((sel) => sel.startsWith("Network."))) {
         fail(
           `no Network subscription on tab ${tabId} — run \`cdp-relay attach ${tabId} --events net\` ` +
             "BEFORE the traffic you want to capture (subscriptions are not retroactive)",
@@ -308,17 +344,24 @@ const cmds = {
           `warning: the event ring overwrote ${body.dropped} events on tab ${tabId} before this pull — the list below has holes\n`,
         );
       }
-      out(PRETTY ? requests : { requests, nextSeq: body.nextSeq, dropped: body.dropped, truncated: body.truncated });
+      out(
+        PRETTY
+          ? requests
+          : { requests, nextSeq: body.nextSeq, dropped: body.dropped, truncated: body.truncated },
+      );
       return;
     }
     if (sub === "body") {
       const requestId = args[3];
       if (!requestId) fail("net body: expected <requestId>");
-      const r = await post("/send", withBrowser({
-        tabId,
-        method: "Network.getResponseBody",
-        params: { requestId },
-      }));
+      const r = await post(
+        "/send",
+        withBrowser({
+          tabId,
+          method: "Network.getResponseBody",
+          params: { requestId },
+        }),
+      );
       const body = ensureOk(r, "net body");
       if (body.ok === false) {
         out({ ok: false, error: body.error });
@@ -328,7 +371,7 @@ const cmds = {
       const result = body.result || {};
       const decoded = result.base64Encoded
         ? Buffer.from(result.body || "", "base64").toString("utf8")
-        : (result.body || "");
+        : result.body || "";
       if (PRETTY) {
         console.log(decoded);
       } else {
@@ -346,11 +389,14 @@ const cmds = {
   async screenshot() {
     const tabId = numArg(1, "tabId");
     const path = args[2] || `/tmp/cdp-relay-${Date.now()}.png`;
-    const r = await post("/send", withBrowser({
-      tabId,
-      method: "Page.captureScreenshot",
-      params: {},
-    }));
+    const r = await post(
+      "/send",
+      withBrowser({
+        tabId,
+        method: "Page.captureScreenshot",
+        params: {},
+      }),
+    );
     const body = ensureOk(r, "screenshot");
     if (body.ok === false) {
       out({ ok: false, error: body.error });
@@ -367,11 +413,14 @@ const cmds = {
     const tabId = numArg(1, "tabId");
     const url = args[2];
     if (!url) fail("nav: expected <url>");
-    const r = await post("/send", withBrowser({
-      tabId,
-      method: "Page.navigate",
-      params: { url },
-    }));
+    const r = await post(
+      "/send",
+      withBrowser({
+        tabId,
+        method: "Page.navigate",
+        params: { url },
+      }),
+    );
     out(ensureOk(r, "nav"));
   },
 
@@ -381,30 +430,36 @@ const cmds = {
     if (!method) fail("send: expected <Method>");
     let params = {};
     if (args[3]) {
-      try { params = JSON.parse(args[3]); }
-      catch (e) { fail(`send: invalid params JSON: ${e.message}`); }
+      try {
+        params = JSON.parse(args[3]);
+      } catch (e) {
+        fail(`send: invalid params JSON: ${(e as Error).message}`);
+      }
     }
     const r = await post("/send", withBrowser({ tabId, method, params }));
     out(ensureOk(r, "send"));
   },
 
-  async help() { printHelp(); },
+  async help() {
+    printHelp();
+  },
 };
 
-function numArg(i, name) {
+function numArg(i: number, name: string): number {
   const v = Number(args[i]);
   if (!Number.isFinite(v)) fail(`expected <${name}> as 1st arg`);
   return v;
 }
 
 /** Surface domains the browser refused to enable — usually a typo'd domain name. */
-function warnFailedDomains(r) {
+function warnFailedDomains(r: any): void {
   const failed = r?.result?.failed;
   if (!Array.isArray(failed) || failed.length === 0) return;
-  for (const f of failed) process.stderr.write(`warning: could not enable ${f.domain} — ${f.message}\n`);
+  for (const f of failed)
+    process.stderr.write(`warning: could not enable ${f.domain} — ${f.message}\n`);
 }
 
-function aggregateRequests(events) {
+function aggregateRequests(events: any[]): any[] {
   const map = new Map();
   for (const ev of events) {
     const p = ev.params || {};
@@ -433,12 +488,10 @@ function aggregateRequests(events) {
   return [...map.values()];
 }
 
-function formatEval(val) {
+function formatEval(val: any): string {
   if (!val) return "(no result)";
   if (val.value !== undefined) {
-    return typeof val.value === "object"
-      ? JSON.stringify(val.value, null, 2)
-      : String(val.value);
+    return typeof val.value === "object" ? JSON.stringify(val.value, null, 2) : String(val.value);
   }
   return val.description || val.type || "(unknown)";
 }
@@ -490,4 +543,4 @@ if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
 }
 if (!(cmd in cmds)) fail(`unknown command: ${cmd}. Try: cdp-relay help`);
 
-cmds[cmd]().catch((e) => fail(e?.message || String(e)));
+cmds[cmd]!().catch((e) => fail((e as Error)?.message || String(e)));

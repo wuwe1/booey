@@ -70,10 +70,10 @@ const chkc = (n, got, sub) => {
 };
 
 try {
-  spawnNode(["daemon/server.mjs", String(PORT)], { CDP_RELAY_CMD_TIMEOUT_MS: "800" });
+  spawnNode(["daemon/server.ts", String(PORT)], { CDP_RELAY_CMD_TIMEOUT_MS: "800" });
   if (!(await pollUntil(async () => (await fetch(`http://127.0.0.1:${PORT}/status`)).ok)))
     throw new Error("daemon never came up");
-  spawnNode(["daemon/test-mock-ext.mjs", String(PORT), "browser-A", "shopee-A"]);
+  spawnNode(["daemon/test-mock-ext.ts", String(PORT), "browser-A", "shopee-A"]);
 
   const relay = new RelayClient({ base: `http://127.0.0.1:${PORT}`, browser: "shopee-A" });
   if (!(await pollUntil(async () => (await relay.browsers()).length === 1)))
@@ -254,7 +254,7 @@ try {
     chk("...classified as a connection failure", isRelayConnectionFailure(e), true);
   }
   const twoBrowsers = new RelayClient({ base: `http://127.0.0.1:${PORT}` });
-  spawnNode(["daemon/test-mock-ext.mjs", String(PORT), "browser-B", "shopee-B"]);
+  spawnNode(["daemon/test-mock-ext.ts", String(PORT), "browser-B", "shopee-B"]);
   await pollUntil(async () => (await twoBrowsers.browsers()).length === 2);
   try {
     await twoBrowsers.tabs();

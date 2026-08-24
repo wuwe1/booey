@@ -8,7 +8,7 @@
 // otherwise will, and which then breaks the moment a message is reworded.
 
 /** Defaults per HTTP status, overridable per throw site. */
-const BY_STATUS = {
+const BY_STATUS: Record<number, { code: string; retriable: boolean }> = {
   400: { code: "BAD_REQUEST", retriable: false },
   404: { code: "NOT_FOUND", retriable: false },
   409: { code: "CONFLICT", retriable: false },
@@ -17,15 +17,25 @@ const BY_STATUS = {
   504: { code: "TIMEOUT", retriable: true },
 };
 
+/** An Error that also knows its HTTP status and machine-readable failure class. */
+export interface HttpError extends Error {
+  httpCode: number;
+  code: string;
+  retriable: boolean;
+}
+
 /**
- * @param {number} httpCode
- * @param {string} message
- * @param {{code?: string, retriable?: boolean}} [opts]
- * @returns {Error & { httpCode: number, code: string, retriable: boolean }}
+ * @param httpCode HTTP status to translate this into at the edge
+ * @param message  human-readable, and only that — callers branch on `code`, not this
+ * @param opts     `code`/`retriable` override the per-status defaults
  */
-export function httpError(httpCode, message, opts = {}) {
+export function httpError(
+  httpCode: number,
+  message: string,
+  opts: { code?: string; retriable?: boolean } = {},
+): HttpError {
   const fallback = BY_STATUS[httpCode] ?? { code: "INTERNAL", retriable: false };
-  const e = /** @type {any} */ (new Error(message));
+  const e = new Error(message) as HttpError;
   e.httpCode = httpCode;
   e.code = opts.code ?? fallback.code;
   e.retriable = opts.retriable ?? fallback.retriable;
@@ -33,7 +43,7 @@ export function httpError(httpCode, message, opts = {}) {
 }
 
 /** The full set, so callers can exhaustively switch. Keep in sync with SPEC.md. */
-export const ERROR_CODES = /** @type {const} */ ([
+export const ERROR_CODES = [
   "NO_BROWSER",
   "UNKNOWN_BROWSER",
   "AMBIGUOUS_BROWSER",
@@ -48,4 +58,4 @@ export const ERROR_CODES = /** @type {const} */ ([
   "UNAVAILABLE",
   "INTERNAL",
   "DEBUGGER_ERROR",
-]);
+] as const;

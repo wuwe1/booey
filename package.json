@@ -5,12 +5,12 @@
   "type": "module",
   "description": "Multi-browser CDP relay: drive any number of already-logged-in browsers from one local daemon via a chrome.debugger extension. See docs/SPEC.md.",
   "bin": {
-    "cdp-relay": "cli/cdp-relay"
+    "cdp-relay": "cli/cdp-relay.ts"
   },
   "scripts": {
-    "cdp-relay": "node cli/cdp-relay",
-    "daemon": "node daemon/server.mjs",
-    "mock-ext": "node daemon/test-mock-ext.mjs",
+    "cdp-relay": "node cli/cdp-relay.ts",
+    "daemon": "node daemon/server.ts",
+    "mock-ext": "node daemon/test-mock-ext.ts",
     "test": "node test/integration.mjs && node test/client.mjs && node test/compat-lilto.mjs",
     "test:compat": "node test/compat-lilto.mjs",
     "test:client": "node test/client.mjs",
@@ -30,6 +30,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.10",
     "@types/node": "^26.2.0",
+    "@types/ws": "^8.18.1",
     "typescript": "^7.0.2"
   }
 }
