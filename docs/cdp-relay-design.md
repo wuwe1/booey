@@ -50,9 +50,14 @@
 |---|---|---|
 | **HTTP + `clients/ts`** | lilto 等直接消费者 | ✅ 见 `SPEC.md` |
 | **CLI** | 人 / 脚本 | ✅ |
-| **标准 CDP endpoint** | Playwright / puppeteer / browser-use | ❌ 未做，但地基已验证，见 §8 |
+| **标准 CDP endpoint** | Playwright / puppeteer / browser-use | ⏸ 暂缓（SDK + CLI 已覆盖当前消费者，见 §11） |
 
 标准 CDP 门面是采用率的关键：有了它，`browser-use` 传个 `cdp_url` 就能跑在用户已登录的浏览器上——这是我们独有、其它方案给不了的组合。
+
+> **2026-08-24 修订：暂缓（YAGNI）。** 当前消费者（lilto）走 HTTP + `clients/ts`，
+> 脚本走 CLI，两条已覆盖全部需要。G 的价值只在「接现成的 browser-use / Playwright
+> 做自主 agent」时兑现，而 §11 明确不做自主 agent。等真有这个需求再补——地基
+> （sessionId 寻址 + session 池）已在 v5 就位，届时是加一层语义映射，不是重来。
 
 ---
 
@@ -412,7 +417,7 @@ KV 存在调用方手里，daemon 只管把动作原语做到无状态、可重�
 
 **结论：OOPIF 可达，标准 CDP 门面可行。** v5 已经把 `sessionId` 打通到 `/send` 和事件上。
 
-门面本身还没做。形态：`/json/version` + `/devtools/browser/<id>` WS，说真 CDP。有了它，`browser-use` 传个 `cdp_url` 就能跑在已登录浏览器上——这是我们独有、其它方案给不了的组合。
+门面本身还没做，且**暂缓**（见 §2 / §11）：当前 SDK + CLI 已覆盖需要。形态照旧记录在此，将来接 browser-use 时照这个做：`/json/version` + `/devtools/browser/<id>` WS，说真 CDP。有了它，`browser-use` 传个 `cdp_url` 就能跑在已登录浏览器上——这是我们独有、其它方案给不了的组合。
 
 ---
 
@@ -482,7 +487,7 @@ browser-use 的 `SessionManager` 是这块的参考实现（单一真源，靠 `
 | D | `elementHash` / `parentBranchHash` | C |
 | E | 剪枝 + serializer（DOM-first）+ selectorMap | C |
 | F | L3：动作层 + 三级回退 + 两层半守卫（缓存留给调用方，见 §6.3） | A + D + E |
-| G | 标准 CDP 门面 | B |
+| G | 标准 CDP 门面（⏸ 暂缓，YAGNI，见 §2 / §11） | B |
 
 **A 是唯一真·零依赖的**，而且它同时是两个下游的地基（第三层守卫、快照失效）。先做它。
 
@@ -511,6 +516,7 @@ lilto 有 `contracts/` 和 `recon/`——手工逆向出来的平台端点契约
 ## 11. 明确不做
 
 - **不做 agent loop**。没有自主决策、没有记忆压缩、没有 planning。要自主 agent 就把 browser-use 接到标准 CDP 门面上。
+- **暂缓标准 CDP 门面（G）**。它是「接现成 browser-use / Playwright」的入口，而那是自主 agent 场景才需要的；当前 lilto 走 HTTP + `clients/ts`、脚本走 CLI，已覆盖全部需要。地基（sessionId 寻址 + session 池）在 v5 已就位，将来要接时是加一层语义映射。
 - **不 launch 浏览器**。launch 是别人已经做好的事，且一旦 launch 就失去存在的理由（已登录的真实浏览器）。
 - **不做云端**。缓存、LLM 调用全部本地或由调用方提供。
 - **不重实现 Playwright 语义层**。stagehand 的 `understudy` 是 34k 行的巨大投入，我们通过标准 CDP 门面直接复用现成的 Playwright。
