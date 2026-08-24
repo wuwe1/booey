@@ -107,6 +107,8 @@ export const EVENT_PRESETS = {
   // DOM.getDocument is cheap: CDP only reports child-node mutations for nodes it
   // has already handed out, so in practice this is just documentUpdated.
   dom: ["DOM.documentUpdated"],
+  // Needed to maintain a session pool; attach({sessions:true}) adds it for you.
+  targets: ["Target.attachedToTarget", "Target.detachedFromTarget", "Target.targetInfoChanged"],
 };
 
 /**

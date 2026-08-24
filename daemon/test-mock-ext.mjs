@@ -11,6 +11,10 @@
 //   Test.sleep    { ms }  reply after a delay — for concurrency timing
 //   Test.late     { ms }  reply after a delay the daemon will have given up on
 //   Test.dirty    {method}  emit one dirtying event (default Page.loadEventFired)
+//   Test.detachSession      emit Target.detachedFromTarget for the fake OOPIF
+//   Test.sessionEcho        echo back whichever sessionId the command carried
+// Target.setAutoAttach announces one fake OOPIF, like a real browser would;
+// Target.enable is rejected, because the real browser has no such method.
 //   Test.noReply          never reply
 //   Test.detach           push `detached` for the tab, then never reply
 // Every subscription change re-emits the fake event burst, so a test can advance
@@ -50,7 +54,10 @@ function setSubscription(tabId, selectors) {
   // A domain the real ext could not enable comes back as `failed`; "Bogus" is
   // the mock's stand-in for a typo'd domain name.
   const failed = [...domains].filter((d) => d === "Bogus").map((d) => ({ domain: d, message: `'${d}.enable' wasn't found` }));
-  return { enabled: [...domains].filter((d) => d !== "Bogus").sort(), failed };
+  // Target is skipped rather than enabled, mirroring NO_ENABLE_DOMAINS in the
+  // extension: it must appear in NEITHER list.
+  const enabled = [...domains].filter((d) => d !== "Bogus" && d !== "Target").sort();
+  return { enabled, failed };
 }
 
 function subscribed(tabId, method) {
@@ -122,6 +129,41 @@ function resultFor(m) {
 /** @returns {Promise<any>|any} the `result` payload, or null to answer nothing */
 function runCdp(m) {
   if (m.method === "Test.noReply") return null;
+  // Chrome has no Target.enable — Target events come from setAutoAttach. The
+  // real browser answers -32601, so the double must too, or the extension's
+  // NO_ENABLE_DOMAINS skip has nothing holding it in place.
+  if (m.method === "Target.enable") throw new Error(`{"code":-32601,"message":"'Target.enable' wasn't found"}`);
+  if (m.method === "Target.setAutoAttach") {
+    // Announce one fake OOPIF, the way a real browser would on auto-attach.
+    if (subscribed(m.tabId, "Target.attachedToTarget")) {
+      send({
+        type: "event",
+        tabId: m.tabId,
+        method: "Target.attachedToTarget",
+        params: {
+          sessionId: `SESS-${m.tabId}-1`,
+          targetInfo: { targetId: `TGT-${m.tabId}-1`, type: "iframe", url: "https://example.com/" },
+        },
+      });
+    }
+    return {};
+  }
+  if (m.method === "Test.detachSession") {
+    if (subscribed(m.tabId, "Target.detachedFromTarget")) {
+      send({
+        type: "event",
+        tabId: m.tabId,
+        method: "Target.detachedFromTarget",
+        params: { sessionId: `SESS-${m.tabId}-1`, targetId: `TGT-${m.tabId}-1` },
+      });
+    }
+    return {};
+  }
+  if (m.method === "Test.sessionEcho") {
+    // Answers differently depending on whether a sessionId came along, so a test
+    // can prove the field actually reached the far end.
+    return { sawSessionId: m.sessionId ?? null };
+  }
   if (m.method === "Test.dirty") {
     // Emit a dirtying event, subject to the tab's subscription like any other.
     const method = m.params?.method || "Page.loadEventFired";

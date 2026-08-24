@@ -103,6 +103,11 @@ async function handleHttp(req, res) {
     }
     return sendJson(res, 200, conn.readEvents(tabId, { since, filterRe: re }));
   }
+  if (method === "GET" && path === "/sessions") {
+    const conn = registry.resolve(url.searchParams.get("browser"));
+    const tabId = num(url.searchParams.get("tabId"));
+    return sendJson(res, 200, { tabId, sessions: conn.sessionList(tabId) });
+  }
   if (method === "GET" && path === "/page") {
     const conn = registry.resolve(url.searchParams.get("browser"));
     return sendJson(res, 200, conn.page(num(url.searchParams.get("tabId"))));
@@ -118,7 +123,11 @@ async function handleHttp(req, res) {
     const body = await readBody(req);
     if (path === "/attach") {
       const conn = registry.resolve(body.browser);
-      return sendJson(res, 200, await conn.attach(num(body.tabId), body.events ?? null));
+      return sendJson(res, 200, await conn.attach(num(body.tabId), body.events ?? null, body.sessions === true));
+    }
+    if (path === "/sessions/enable") {
+      const conn = registry.resolve(body.browser);
+      return sendJson(res, 200, await conn.enableSessions(num(body.tabId)));
     }
     if (path === "/open-tab") {
       const conn = registry.resolve(body.browser);

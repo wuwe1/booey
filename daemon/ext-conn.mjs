@@ -31,6 +31,7 @@ import {
   MAX_INFLIGHT_PER_TAB,
   UNORDERED_CDP_METHODS,
   DIRTY_EVENT_METHODS,
+  DEFAULT_EVENTS,
   expandEventSelectors,
 } from "./config.mjs";
 
@@ -82,6 +83,19 @@ export class ExtConn {
      * @type {Map<number, {revision:number, lastDirty:{method:string, ts:number}|null}>}
      */
     this.pageState = new Map();
+    /**
+     * tabId → targetId → session. Keyed on **targetId, not sessionId**: the
+     * sessionId is reissued every time the debugger reattaches, while the
+     * targetId keeps naming the same live frame. The sessionId is that frame's
+     * current address, not its identity.
+     *
+     * Neither survives a reload: the frame is destroyed and a new one is
+     * created, so both ids change (measured — targetId B359EA19D0 → 2B3BA7C45B
+     * across one Page.reload). "Stable across reattach" is not "stable across
+     * navigation"; nothing here is a durable handle on a frame.
+     * @type {Map<number, Map<string, {sessionId:string, targetId:string, type:string, url:string, openedAt:number}>>}
+     */
+    this.sessions = new Map();
 
     this._onHello = onHello;
     this._onClose = onClose;
@@ -206,13 +220,23 @@ export class ExtConn {
   /**
    * @param {number} tabId
    * @param {string[]|null} [events] selectors or preset names; null → DEFAULT_EVENTS
+   * @param {boolean} [sessions] also flat auto-attach, so out-of-process iframes
+   *   become addressable. Implies the `targets` preset — without those events the
+   *   pool cannot be maintained, and a caller asking for sessions but not getting
+   *   Target events would silently get an empty pool.
    */
-  async attach(tabId, events) {
-    const selectors = expandEventSelectors(events ?? null);
+  async attach(tabId, events, sessions = false) {
+    const requested = events ?? null;
+    const withTargets = sessions ? [...(requested ?? DEFAULT_EVENTS), "targets"] : requested;
+    const selectors = expandEventSelectors(withTargets);
     if (this.attachedTabs.has(tabId)) {
       // Already attached: honour the subscription the caller just asked for
       // rather than silently keeping whatever the first attach set up.
-      if (events != null) return this.setEvents(tabId, events);
+      if (requested != null || sessions) {
+        const r = await this.setEvents(tabId, selectors);
+        if (!r.ok || !sessions) return r;
+        return this.enableSessions(tabId);
+      }
       return { ok: true, result: { events: this.subscriptions.get(tabId) ?? selectors } };
     }
     const r = await this.callExt({ type: "attach", tabId, events: selectors });
@@ -220,7 +244,11 @@ export class ExtConn {
     this.attachedTabs.add(tabId);
     this.subscriptions.set(tabId, selectors);
     this.clearTabCache(tabId);
-    return { ok: true, result: { events: selectors, ...(r.result || {}) } };
+    const base = { ok: true, result: { events: selectors, ...(r.result || {}) } };
+    if (!sessions) return base;
+    const s = await this.enableSessions(tabId);
+    if (!s.ok) return s;
+    return { ok: true, result: { ...base.result, sessions: s.result.sessions } };
   }
 
   /**
@@ -338,6 +366,7 @@ export class ExtConn {
         return;
       case "event":
         if (typeof m.tabId === "number") {
+          this._trackSession(m.tabId, m.method, m.params);
           const ev = { method: m.method, params: m.params, ts: Date.now() };
           if (m.sessionId) ev.sessionId = m.sessionId; // came from an OOPIF/worker session
           this.cacheEvent(m.tabId, ev);
@@ -386,6 +415,70 @@ export class ExtConn {
     this.helloed = true;
     this._log(`[${this.name}] hello ok (${this.tabs.length} tabs)${wasHelloed ? " [re-hello]" : ""}`);
     this._onHello(this); // registry registers under this.id (may kick a same-id stale conn)
+  }
+
+  // ---- session pool (out-of-process iframes, workers) ----
+  //
+  // Fed entirely by Target events, the way browser-use's SessionManager is: the
+  // pool then reflects browser reality rather than a list we tried to keep in
+  // step by hand. Nothing here polls.
+
+  /** @param {number} tabId @param {string} method @param {any} params */
+  _trackSession(tabId, method, params) {
+    if (!method.startsWith("Target.") || !params) return;
+    if (method === "Target.attachedToTarget") {
+      const info = params.targetInfo || {};
+      if (!params.sessionId || !info.targetId) return;
+      const pool = this.sessions.get(tabId) ?? new Map();
+      pool.set(info.targetId, {
+        sessionId: params.sessionId,
+        targetId: info.targetId,
+        type: info.type || "",
+        url: info.url || "",
+        openedAt: Date.now(),
+      });
+      this.sessions.set(tabId, pool);
+      return;
+    }
+    if (method === "Target.detachedFromTarget") {
+      const pool = this.sessions.get(tabId);
+      if (!pool) return;
+      // detachedFromTarget carries sessionId and (usually) targetId. Fall back to
+      // a sessionId scan so a payload without targetId still evicts.
+      const targetId =
+        params.targetId ?? [...pool.values()].find((x) => x.sessionId === params.sessionId)?.targetId;
+      if (targetId) pool.delete(targetId);
+      if (pool.size === 0) this.sessions.delete(tabId);
+      return;
+    }
+    if (method === "Target.targetInfoChanged") {
+      const info = params.targetInfo || {};
+      const existing = this.sessions.get(tabId)?.get(info.targetId);
+      if (existing) existing.url = info.url || existing.url; // a frame navigated
+    }
+  }
+
+  /** @param {number} tabId @returns {Array<any>} */
+  sessionList(tabId) {
+    return [...(this.sessions.get(tabId)?.values() ?? [])];
+  }
+
+  /**
+   * Turn on flat auto-attach for a tab. Idempotent — Target.setAutoAttach is,
+   * and re-sending it is how a caller repairs the pool after a reload.
+   * @param {number} tabId
+   */
+  async enableSessions(tabId) {
+    if (!this.attachedTabs.has(tabId)) throw httpError(409, `tab ${tabId} not attached`, { code: "TAB_NOT_ATTACHED" });
+    const r = await this.sendCdp(tabId, "Target.setAutoAttach", {
+      autoAttach: true,
+      flatten: true,
+      // Pausing every new target until we release it would hold up page loads
+      // the caller never asked us to inspect. Opt-in territory, not a default.
+      waitForDebuggerOnStart: false,
+    });
+    if (!r.ok) return r;
+    return { ok: true, result: { sessions: this.sessionList(tabId) } };
   }
 
   // ---- page revision ----
@@ -447,6 +540,9 @@ export class ExtConn {
     // re-attaching ends that observation, so the count starts over rather than
     // letting a stale baseline look valid across the gap.
     this.pageState.delete(tabId);
+    // Sessions die with the attachment; keeping them would hand out sessionIds
+    // the browser has already invalidated.
+    this.sessions.delete(tabId);
   }
 
   eventCount() {

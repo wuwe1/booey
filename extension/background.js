@@ -45,6 +45,12 @@ const WS_BUFFER_LIMIT_BYTES = 4 * 1024 * 1024; // above this, shed events (never
 //      is precisely why (1) exists.
 const KEEPALIVE_ALARM = "cdp-relay-keepalive";
 const KEEPALIVE_PERIOD_MIN = 0.5; // 30s — Chrome's floor; asking for less is ignored
+// Domains that deliver events without an enable call. Target is the one that
+// matters here: `Target.enable` does not exist in CDP (-32601), and its events
+// flow from Target.setAutoAttach instead. Without this, every sessions:true
+// attach reports a failed domain — and `failed` is supposed to mean "you typo'd
+// a domain name", so a permanent entry there trains callers to ignore it.
+const NO_ENABLE_DOMAINS = new Set(["Target"]);
 const HEARTBEAT_PORT = "cdp-relay-heartbeat";
 const HEARTBEAT_DOC = "offscreen-heartbeat.html";
 
@@ -136,7 +142,7 @@ async function reconcile(tabId) {
   const failed = [];
 
   for (const domain of want) {
-    if (have.has(domain)) continue;
+    if (have.has(domain) || NO_ENABLE_DOMAINS.has(domain)) continue;
     try {
       await sendCdp(tabId, `${domain}.enable`, {});
       have.add(domain);

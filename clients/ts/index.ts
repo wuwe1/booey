@@ -100,7 +100,23 @@ export interface BrowserInfo {
 }
 
 /** A preset name, or a raw `Domain.method` / `Domain.*` selector. */
-export type EventSelector = "nav" | "net" | "console" | (string & {});
+export type EventSelector = "nav" | "net" | "console" | "dom" | "targets" | (string & {});
+
+/** A flat auto-attached target: an out-of-process iframe, or a worker. */
+export interface Session {
+  /** The frame's current address. Reissued on reattach — do not persist it. */
+  sessionId: string;
+  /**
+   * Names the same live frame across a reattach, so key in-flight state on this
+   * rather than on sessionId. It does **not** survive the frame being destroyed:
+   * a reload replaces the target and changes this too. Neither id is a durable
+   * handle on "that iframe" across navigation.
+   */
+  targetId: string;
+  type: string;
+  url: string;
+  openedAt: number;
+}
 
 export interface Subscription {
   /** The expanded selector list now in force. */
@@ -109,6 +125,8 @@ export interface Subscription {
   enabled: string[];
   /** Domains the browser refused — almost always a typo'd domain name. */
   failed: Array<{ domain: string; message: string }>;
+  /** Present when attached with `sessions: true`. */
+  sessions?: Session[];
 }
 
 export interface RelayEvent {
@@ -304,12 +322,40 @@ export class RelayClient {
    * want to see. Default is `nav` (page lifecycle only); ask for `net` if you
    * intend to read requests.
    */
-  async attach(tabId: number, opts: { events?: EventSelector[] } = {}): Promise<Subscription> {
+  async attach(
+    tabId: number,
+    opts: { events?: EventSelector[]; sessions?: boolean } = {},
+  ): Promise<Subscription> {
     const r = await this.req<{ ok: true; result: Subscription }>("POST", "/attach", {
       tabId,
       ...(opts.events ? { events: opts.events } : {}),
+      ...(opts.sessions ? { sessions: true } : {}),
     });
     return r.result;
+  }
+
+  /**
+   * Out-of-process iframes and workers attached to this tab.
+   *
+   * A tab-scoped attachment cannot see inside a cross-**site** iframe — Chrome
+   * puts it in its own process, and `DOM.getDocument` on the tab returns the host
+   * page only. Pass the `sessionId` from here to `send()` to reach inside it.
+   *
+   * Note cross-*origin* is not enough: site isolation works on scheme + eTLD+1,
+   * so `a.example.com` inside `example.com` stays in the same process and never
+   * shows up here. Its content is already in the tab's own DOM tree.
+   *
+   * Requires having attached with `sessions: true` (or calling
+   * `enableSessions`); otherwise this is always empty.
+   */
+  async sessions(tabId: number): Promise<Session[]> {
+    return (await this.req<{ sessions: Session[] }>("GET", `/sessions?tabId=${tabId}`)).sessions;
+  }
+
+  /** Turn on flat auto-attach for an already-attached tab. Idempotent. */
+  async enableSessions(tabId: number): Promise<Session[]> {
+    const r = await this.req<{ ok: true; result: { sessions: Session[] } }>("POST", "/sessions/enable", { tabId });
+    return r.result.sessions;
   }
 
   async detach(tabId: number): Promise<void> {

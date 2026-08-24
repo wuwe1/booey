@@ -73,6 +73,42 @@ try {
   chk("filter narrows", (await relay.readEvents(1001, { filter: /responseReceived/ })).events.every((e) => e.method === "Network.responseReceived"), true);
   chkc("subscription() reads back", (await relay.subscription(1001)).join(), "Network.requestWillBeSent");
 
+  // ---- sessions (out-of-process iframes) ----
+  // Without sessions:true nothing auto-attaches, so the pool must stay empty
+  // rather than quietly reporting stale or invented targets.
+  chk("no session pool without sessions:true", (await relay.sessions(1002)).length, 0);
+
+  const withSessions = await relay.attach(1002, { events: ["nav"], sessions: true });
+  chk("sessions:true implies the targets preset", withSessions.events.includes("Target.attachedToTarget"), true);
+  // Target has no enable method — its events come from setAutoAttach. It must
+  // show up in neither list: reporting it as failed would put a permanent entry
+  // in `failed`, whose whole job is to flag a typo'd domain name.
+  chk("Target is not reported as enabled", withSessions.enabled.includes("Target"), false);
+  chk("...nor as failed", JSON.stringify(withSessions.failed).includes("Target"), false);
+  await wait(200);
+  const pool = await relay.sessions(1002);
+  chk("auto-attach populated the pool", pool.length, 1);
+  chk("...keyed on a stable targetId", pool[0].targetId, "TGT-1002-1");
+  chkc("...carrying the frame's url", pool[0].url, "example.com");
+
+  // The sessionId has to actually reach chrome.debugger, not be dropped en route.
+  const echoed = await relay.send(1002, "Test.sessionEcho", {}, { sessionId: pool[0].sessionId });
+  chk("sessionId reaches the extension", echoed.sawSessionId, pool[0].sessionId);
+  const noSession = await relay.send(1002, "Test.sessionEcho", {});
+  chk("...and is absent when not asked for", noSession.sawSessionId, null);
+
+  await relay.send(1002, "Test.detachSession", {});
+  await wait(200);
+  chk("detachedFromTarget evicts it", (await relay.sessions(1002)).length, 0);
+
+  // Sessions die with the attachment; handing out invalidated sessionIds after a
+  // reattach would be worse than reporting none.
+  await relay.attach(1002, { events: ["nav"], sessions: true });
+  await wait(200);
+  chk("re-attach repopulates from scratch", (await relay.sessions(1002)).length, 1);
+  await relay.detach(1002);
+  chk("detach empties the pool", (await relay.sessions(1002)).length, 0);
+
   // ---- page revision ----
   // The subscription bounds what can bump it: an unsubscribed dirtying event is
   // dropped in the extension and the daemon never learns of it.

@@ -168,6 +168,13 @@ the `/events` cursor without reattaching.
   `4000` and the extension stops reconnecting permanently.
 - **One debugger per tab.** If the user opens DevTools on an attached tab, Chrome
   detaches us (`onDetach`).
+- **`Target` has no `enable` method** (`-32601`). Its events come from
+  `setAutoAttach`; `NO_ENABLE_DOMAINS` in the extension skips it so it lands in
+  neither `enabled` nor `failed`. The mock rejects `Target.enable` for the same
+  reason — without that, nothing holds the skip in place.
+- **Cross-origin is not cross-site.** Site isolation is scheme + eTLD+1, so
+  `a.example.com` inside `example.com` is same-process and never becomes an
+  OOPIF. Don't test OOPIF handling against a subdomain iframe.
 - **A tab attachment does not reach into out-of-process iframes.** Anything
   cross-site (payments, embedded logins, ad slots) needs
   `Target.setAutoAttach{flatten:true}` and a `sessionId` on the command. Key
@@ -222,7 +229,8 @@ Do **not** add a `Co-Authored-By` trailer. Push only when the user asks.
 - **v5** `cdp` commands and events carry an optional `sessionId`, so a flat
   auto-attached out-of-process iframe can be addressed. Verified end to end on a
   real OOPIF — see SPEC's "Sessions" section. Same release adds the per-tab page
-  `revision` (`GET /page`) and the `dom` event preset.
+  `revision` (`GET /page`), the `dom` event preset, and `attach({sessions:true})`
+  with a per-tab session pool (`GET /sessions`).
 
 v3 and v4 were motivated by an audit against `browserbase/stagehand` and
 `browser-use` (see `~/Developer/browser_agent/docs/cdp-relay-design.md`,

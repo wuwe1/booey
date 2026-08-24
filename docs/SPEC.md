@@ -58,6 +58,7 @@ nobody subscribed to costs one `Set.has` and nothing else.
 | `net` | `Network.requestWillBeSent` `Network.responseReceived` `Network.loadingFinished` `Network.loadingFailed` | `Network` |
 | `console` | `Runtime.consoleAPICalled` `Runtime.exceptionThrown` | `Runtime` |
 | `dom` | `DOM.documentUpdated` | `DOM` |
+| `targets` | `Target.attachedToTarget` `Target.detachedFromTarget` `Target.targetInfoChanged` | — (see below) |
 
 `net` deliberately omits `Network.dataReceived`, which fires per data chunk and
 is the largest single source of event volume with no consumer here. `Runtime` is
@@ -226,8 +227,11 @@ POST /shutdown                                   → { ok: true }
 
 GET  /tabs?browser=<id|label>[&fresh=0]          → { tabs: [{tabId, url, title}] }
 GET  /page?browser=<>&tabId=N                    → { tabId, attached, revision, lastDirty, events, url }
+GET  /sessions?browser=<>&tabId=N                → { tabId, sessions: [{sessionId, targetId, type, url, openedAt}] }
+POST /sessions/enable  {browser?, tabId}         → { ok: true, result:{ sessions } }
 POST /open-tab      {browser?, url}              → { ok: true, result:{tab} }
-POST /attach        {browser?, tabId, events?}   → { ok: true, result:{events, enabled, failed} }
+POST /attach        {browser?, tabId, events?, sessions?}
+                                                 → { ok: true, result:{events, enabled, failed, sessions?} }
 POST /detach        {browser?, tabId}            → { ok: true }
 POST /send          {browser?, tabId, method, params?, ordered?, timeoutMs?, sessionId?}
                                                  → { ok: true, result } | { ok: false, error:{message, code} }
@@ -279,6 +283,44 @@ POST /send {"tabId":N, "method":"DOM.getDocument", "sessionId":"14ECF1C2BE72…"
 `-32001 Session with given id not found.`
 
 Events originating from such a session carry `sessionId` alongside `tabId`.
+
+### The session pool
+
+`attach` with `sessions: true` does the whole job — it adds the `targets` preset,
+sends `Target.setAutoAttach{flatten:true}`, and maintains a pool per tab from the
+Target events. Nothing polls.
+
+```
+POST /attach   {tabId, events?, sessions: true}  → { ok, result:{ events, enabled, failed, sessions } }
+GET  /sessions?browser=<>&tabId=N                → { tabId, sessions: [Session] }
+POST /sessions/enable {browser?, tabId}          → { ok, result:{ sessions } }   // idempotent
+
+Session = { sessionId, targetId, type, url, openedAt }
+```
+
+The pool is **keyed on `targetId`, not `sessionId`**: a sessionId is reissued
+every time the debugger reattaches, while the targetId keeps naming the same live
+frame. **Neither survives a reload** — the frame is destroyed and a new one is
+created, so both ids change (measured: `B359EA19D0` → `2B3BA7C45B` across one
+`Page.reload`). *Stable across reattach* is not *stable across navigation*;
+neither id is a durable handle on "that iframe".
+
+The pool is emptied on attach / detach / `detached`, because those invalidate
+every sessionId in it.
+
+**`Target` has no `enable` method.** Its events come from `setAutoAttach`, so the
+extension skips it when reconciling domains — it appears in neither `enabled` nor
+`failed`. (`Target.enable` answers `-32601`; a permanent entry in `failed` would
+train callers to ignore a field whose whole job is flagging a typo'd domain.)
+
+**Cross-origin is not enough — it has to be cross-site.** Site isolation works on
+scheme + eTLD+1, so `a.example.com` framed in `example.com` stays in the same
+process and never appears in the pool. Its content is already in the tab's own
+DOM tree. Of 13 real tabs surveyed, the three with "cross-origin" iframes were
+all same-site subdomains; a genuine OOPIF needed a purpose-built page.
+
+`waitForDebuggerOnStart` is left off: pausing every new target until we release
+it would stall page loads the caller never asked us to inspect.
 
 **Lane granularity is still the tab.** An OOPIF's session shares the tab's focus,
 dialogs, and navigation, so ordering has to be decided at tab granularity — a
