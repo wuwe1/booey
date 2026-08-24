@@ -19,17 +19,18 @@ daemon, extension, or CLI. This file is orientation; SPEC.md is the source of tr
 ## Commands
 
 ```sh
-npm install                                      # only dependency is `ws`
+npm install                                      # `ws` (runtime) + typescript/biome/@types/node (dev)
 npm test                                          # integration test (see Testing)
-node --check <file.mjs>                           # syntax-check (there is no build/TS step)
+npm run typecheck                                 # tsc --noEmit — strict, no emit step
+npm run lint / npm run format                     # biome (lint / format)
 
 node daemon/server.mjs [port]                     # run the daemon (default 9223)
 node daemon/test-mock-ext.mjs <port> <id> <label> # a fake browser (protocol test double)
 cli/cdp-relay <command> [--browser <id|label>] [--port N]   # the CLI; `cli/cdp-relay help`
 ```
 
-There is **no compiler and no lint step**. Validation = `node --check` on changed
-files + `npm test` green.
+There is **no build or emit step** — Node ≥22.18 runs `.ts` directly via type
+stripping. Validation = `npm run typecheck` + `npm run lint` + `npm test` green.
 
 ## Layout
 
@@ -140,8 +141,11 @@ the `/events` cursor without reattaching.
 
 ## Conventions
 
-- **Plain ES modules (`.mjs`), Node ≥18.** No TypeScript, no bundler. JSDoc on
-  exported classes for editor types. Keep dependencies near-zero (`ws` only).
+- **TypeScript in `daemon/`, `cli/`, `clients/`; plain JS in `extension/`.** Node
+  ≥22.18 runs `.ts` directly (type stripping — no build/emit step), so use only
+  erasable syntax: no `enum`/`namespace`/decorators/parameter-properties, and
+  import with real `.ts` extensions. JSDoc stays where it helps editors. Keep
+  runtime deps near-zero (`ws` only); typecheck/lint tooling is dev-only.
 - **Protocol changes are a four-file edit:** bump `PROTOCOL_VERSION` in
   `daemon/config.mjs`, `extension/background.js`, **and**
   `daemon/test-mock-ext.mjs` (all must match, or the daemon closes with code
@@ -202,8 +206,8 @@ Do **not** add a `Co-Authored-By` trailer. Push only when the user asks.
 ## Working with the user
 
 - **Verify before claiming done and before committing:** `npm test` green +
-  `node --check` clean. Edits can silently mis-apply on large files — re-read the
-  region after editing to confirm it landed.
+  `npm run typecheck` clean + `npm run lint` clean. Edits can silently mis-apply
+  on large files — re-read the region after editing to confirm it landed.
 - **Observation ≠ inference.** Confirm command output by reading files; don't trust
   a possibly-scrambled terminal echo.
 - **Explain before editing.** For non-trivial work, lay out what + why and stop for

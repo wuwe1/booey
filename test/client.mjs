@@ -8,7 +8,12 @@
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { RelayClient, RelayError, PageJsError, isRelayConnectionFailure } from "../clients/ts/index.ts";
+import {
+  isRelayConnectionFailure,
+  PageJsError,
+  RelayClient,
+  RelayError,
+} from "../clients/ts/index.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = Number(process.argv[2] || 9233);
@@ -16,35 +21,75 @@ const procs = [];
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function spawnNode(args, env) {
-  const p = spawn(process.execPath, args, { cwd: ROOT, stdio: ["ignore", "ignore", "ignore"], env: { ...process.env, ...env } });
+  const p = spawn(process.execPath, args, {
+    cwd: ROOT,
+    stdio: ["ignore", "ignore", "ignore"],
+    env: { ...process.env, ...env },
+  });
   procs.push(p);
   return p;
 }
-const cleanup = () => { for (const p of procs) { try { p.kill("SIGKILL"); } catch {} } };
+const cleanup = () => {
+  for (const p of procs) {
+    try {
+      p.kill("SIGKILL");
+    } catch {}
+  }
+};
 
 async function pollUntil(fn, tries = 100, gap = 50) {
   for (let i = 0; i < tries; i++) {
-    try { const v = await fn(); if (v) return v; } catch {}
+    try {
+      const v = await fn();
+      if (v) return v;
+    } catch {}
     await wait(gap);
   }
   return null;
 }
 
-let pass = 0, fail = 0;
-const chk = (n, got, want) => { if (got === want) { console.log("PASS", n); pass++; } else { console.log(`FAIL ${n} — got [${got}] want [${want}]`); fail++; } };
-const chkc = (n, got, sub) => { if (String(got).includes(sub)) { console.log("PASS", n); pass++; } else { console.log(`FAIL ${n} — got [${got}] want contains [${sub}]`); fail++; } };
+let pass = 0,
+  fail = 0;
+const chk = (n, got, want) => {
+  if (got === want) {
+    console.log("PASS", n);
+    pass++;
+  } else {
+    console.log(`FAIL ${n} — got [${got}] want [${want}]`);
+    fail++;
+  }
+};
+const chkc = (n, got, sub) => {
+  if (String(got).includes(sub)) {
+    console.log("PASS", n);
+    pass++;
+  } else {
+    console.log(`FAIL ${n} — got [${got}] want contains [${sub}]`);
+    fail++;
+  }
+};
 
 try {
   spawnNode(["daemon/server.mjs", String(PORT)], { CDP_RELAY_CMD_TIMEOUT_MS: "800" });
-  if (!(await pollUntil(async () => (await fetch(`http://127.0.0.1:${PORT}/status`)).ok))) throw new Error("daemon never came up");
+  if (!(await pollUntil(async () => (await fetch(`http://127.0.0.1:${PORT}/status`)).ok)))
+    throw new Error("daemon never came up");
   spawnNode(["daemon/test-mock-ext.mjs", String(PORT), "browser-A", "shopee-A"]);
 
   const relay = new RelayClient({ base: `http://127.0.0.1:${PORT}`, browser: "shopee-A" });
-  if (!(await pollUntil(async () => (await relay.browsers()).length === 1))) throw new Error("browser never registered");
+  if (!(await pollUntil(async () => (await relay.browsers()).length === 1)))
+    throw new Error("browser never registered");
 
   // ---- discovery ----
-  chk("tabs({fresh:false}) reads the snapshot", (await relay.tabs({ fresh: false })).some((t) => t.url === "mock://fresh-only"), false);
-  chk("tabs() round-trips", (await relay.tabs()).some((t) => t.url === "mock://fresh-only"), true);
+  chk(
+    "tabs({fresh:false}) reads the snapshot",
+    (await relay.tabs({ fresh: false })).some((t) => t.url === "mock://fresh-only"),
+    false,
+  );
+  chk(
+    "tabs() round-trips",
+    (await relay.tabs()).some((t) => t.url === "mock://fresh-only"),
+    true,
+  );
   chk("findTab", (await relay.findTab(/seller\.shopee\.tw/)).tabId, 1001);
 
   // ---- attach returns the subscription it actually installed ----
@@ -70,8 +115,18 @@ try {
   const p2 = await relay.readEvents(1001, { since: p1.nextSeq });
   chk("cursor returns only new events", p2.events.length, 3);
   chk("cursor advances", p2.nextSeq > p1.nextSeq, true);
-  chk("filter narrows", (await relay.readEvents(1001, { filter: /responseReceived/ })).events.every((e) => e.method === "Network.responseReceived"), true);
-  chkc("subscription() reads back", (await relay.subscription(1001)).join(), "Network.requestWillBeSent");
+  chk(
+    "filter narrows",
+    (await relay.readEvents(1001, { filter: /responseReceived/ })).events.every(
+      (e) => e.method === "Network.responseReceived",
+    ),
+    true,
+  );
+  chkc(
+    "subscription() reads back",
+    (await relay.subscription(1001)).join(),
+    "Network.requestWillBeSent",
+  );
 
   // ---- sessions (out-of-process iframes) ----
   // Without sessions:true nothing auto-attaches, so the pool must stay empty
@@ -79,7 +134,11 @@ try {
   chk("no session pool without sessions:true", (await relay.sessions(1002)).length, 0);
 
   const withSessions = await relay.attach(1002, { events: ["nav"], sessions: true });
-  chk("sessions:true implies the targets preset", withSessions.events.includes("Target.attachedToTarget"), true);
+  chk(
+    "sessions:true implies the targets preset",
+    withSessions.events.includes("Target.attachedToTarget"),
+    true,
+  );
   // Target has no enable method — its events come from setAutoAttach. It must
   // show up in neither list: reporting it as failed would put a permanent entry
   // in `failed`, whose whole job is to flag a typo'd domain name.
@@ -122,7 +181,11 @@ try {
   await wait(200);
   const r1 = await relay.revision(1001);
   chk("a dirtying event bumps the revision", r1 > r0, true);
-  chkc("...and says what did it", (await relay.page(1001)).lastDirty?.method, "Page.loadEventFired");
+  chkc(
+    "...and says what did it",
+    (await relay.page(1001)).lastDirty?.method,
+    "Page.loadEventFired",
+  );
 
   await relay.send(1001, "Test.dirty", { method: "DOM.documentUpdated" });
   await wait(200);
@@ -157,7 +220,9 @@ try {
   const quiet = await relay.settled(1001, { quietMs: 300, timeoutMs: 5000, pollMs: 50 });
   chk(`settled() returns quiet on a still page (${Date.now() - tQuiet}ms)`, quiet.quiet, true);
 
-  const churn = setInterval(() => { relay.send(1001, "Test.dirty", {}).catch(() => {}); }, 100);
+  const churn = setInterval(() => {
+    relay.send(1001, "Test.dirty", {}).catch(() => {});
+  }, 100);
   const busy = await relay.settled(1001, { quietMs: 400, timeoutMs: 1500, pollMs: 50 });
   clearInterval(churn);
   chk("settled() reports quiet:false while the page churns", busy.quiet, false);

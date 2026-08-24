@@ -23,21 +23,21 @@
  * when they do.
  */
 export type RelayErrorCode =
-  | "NO_BROWSER"          // nothing connected
-  | "UNKNOWN_BROWSER"     // selector matched no browser
-  | "AMBIGUOUS_BROWSER"   // selector needed, or matched several
-  | "EXT_NOT_READY"       // connected but pre-hello
-  | "EXT_DISCONNECTED"    // the browser went away mid-command
-  | "TAB_NOT_ATTACHED"    // attach before sending
-  | "TAB_DETACHED"        // the debugger was taken away (DevTools opened, tab closed)
-  | "TIMEOUT"             // no answer within the command budget
+  | "NO_BROWSER" // nothing connected
+  | "UNKNOWN_BROWSER" // selector matched no browser
+  | "AMBIGUOUS_BROWSER" // selector needed, or matched several
+  | "EXT_NOT_READY" // connected but pre-hello
+  | "EXT_DISCONNECTED" // the browser went away mid-command
+  | "TAB_NOT_ATTACHED" // attach before sending
+  | "TAB_DETACHED" // the debugger was taken away (DevTools opened, tab closed)
+  | "TIMEOUT" // no answer within the command budget
   | "BAD_REQUEST"
   | "NOT_FOUND"
   | "CONFLICT"
   | "UNAVAILABLE"
   | "INTERNAL"
-  | "DEBUGGER_ERROR"      // chrome.debugger refused the command
-  | "UNREACHABLE";        // the daemon itself isn't answering (client-side)
+  | "DEBUGGER_ERROR" // chrome.debugger refused the command
+  | "UNREACHABLE"; // the daemon itself isn't answering (client-side)
 
 /** A transport / daemon / debugger failure. Distinct from a page-level error. */
 export class RelayError extends Error {
@@ -45,7 +45,12 @@ export class RelayError extends Error {
   readonly retriable: boolean;
   readonly status?: number;
 
-  constructor(message: string, code: RelayErrorCode = "INTERNAL", retriable = false, status?: number) {
+  constructor(
+    message: string,
+    code: RelayErrorCode = "INTERNAL",
+    retriable = false,
+    status?: number,
+  ) {
     super(message);
     this.name = "RelayError";
     this.code = code;
@@ -191,13 +196,18 @@ export class RelayClient {
     return this.browser;
   }
 
-  private async req<T>(method: "GET" | "POST", path: string, body?: Record<string, unknown>): Promise<T> {
+  private async req<T>(
+    method: "GET" | "POST",
+    path: string,
+    body?: Record<string, unknown>,
+  ): Promise<T> {
     this.beforeRequest?.();
     // The browser selector rides the query string on GET and the body on POST.
     let url = this.base + path;
     let payload = body;
     if (this.browser) {
-      if (method === "GET") url += `${path.includes("?") ? "&" : "?"}browser=${encodeURIComponent(this.browser)}`;
+      if (method === "GET")
+        url += `${path.includes("?") ? "&" : "?"}browser=${encodeURIComponent(this.browser)}`;
       else payload = { browser: this.browser, ...body };
     }
 
@@ -222,11 +232,21 @@ export class RelayClient {
     try {
       json = JSON.parse(text);
     } catch {
-      throw new RelayError(`daemon ${res.status}: ${text.slice(0, 200)}`, "INTERNAL", false, res.status);
+      throw new RelayError(
+        `daemon ${res.status}: ${text.slice(0, 200)}`,
+        "INTERNAL",
+        false,
+        res.status,
+      );
     }
     if (!res.ok) {
       const e = json as { error?: string; code?: RelayErrorCode; retriable?: boolean };
-      throw new RelayError(e.error ?? res.statusText, e.code ?? "INTERNAL", e.retriable ?? false, res.status);
+      throw new RelayError(
+        e.error ?? res.statusText,
+        e.code ?? "INTERNAL",
+        e.retriable ?? false,
+        res.status,
+      );
     }
     return json as T;
   }
@@ -248,7 +268,12 @@ export class RelayClient {
       ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
       ...(opts.sessionId === undefined ? {} : { sessionId: opts.sessionId }),
     });
-    if (!r.ok) throw new RelayError(`${method}: ${r.error.message}`, r.error.code ?? "DEBUGGER_ERROR", false);
+    if (!r.ok)
+      throw new RelayError(
+        `${method}: ${r.error.message}`,
+        r.error.code ?? "DEBUGGER_ERROR",
+        false,
+      );
     return r.result;
   }
 
@@ -276,7 +301,12 @@ export class RelayClient {
     // Not in the snapshot: a tab opened moments ago may not have been pushed yet.
     const fresh = await this.tabs();
     const freshHit = fresh.find((t) => urlRe.test(t.url));
-    if (!freshHit) throw new RelayError(`no tab matching ${urlRe} — open the site and log in first`, "NOT_FOUND", false);
+    if (!freshHit)
+      throw new RelayError(
+        `no tab matching ${urlRe} — open the site and log in first`,
+        "NOT_FOUND",
+        false,
+      );
     return freshHit;
   }
 
@@ -299,7 +329,12 @@ export class RelayClient {
     while (Date.now() < deadline) {
       const seen = (await this.tabs()).find((t) => t.tabId === tab.tabId);
       if (seen?.url && seen.url !== "about:blank") return seen;
-      if (!seen) throw new RelayError(`tab ${tab.tabId} vanished right after opening ${url}`, "NOT_FOUND", false);
+      if (!seen)
+        throw new RelayError(
+          `tab ${tab.tabId} vanished right after opening ${url}`,
+          "NOT_FOUND",
+          false,
+        );
       await sleep(300);
     }
     return tab;
@@ -354,7 +389,11 @@ export class RelayClient {
 
   /** Turn on flat auto-attach for an already-attached tab. Idempotent. */
   async enableSessions(tabId: number): Promise<Session[]> {
-    const r = await this.req<{ ok: true; result: { sessions: Session[] } }>("POST", "/sessions/enable", { tabId });
+    const r = await this.req<{ ok: true; result: { sessions: Session[] } }>(
+      "POST",
+      "/sessions/enable",
+      { tabId },
+    );
     return r.result.sessions;
   }
 
@@ -438,7 +477,10 @@ export class RelayClient {
 
   /** Replace the tab's subscription. Last writer wins; there is no refcounting. */
   async subscribe(tabId: number, events: EventSelector[]): Promise<Subscription> {
-    const r = await this.req<{ ok: true; result: Subscription }>("POST", "/events/subscribe", { tabId, events });
+    const r = await this.req<{ ok: true; result: Subscription }>("POST", "/events/subscribe", {
+      tabId,
+      events,
+    });
     return r.result;
   }
 
@@ -451,7 +493,10 @@ export class RelayClient {
    * only what is new. **Check `truncated`** — it is the only thing separating
    * "nothing happened" from "the ring overwrote it before you looked".
    */
-  async readEvents(tabId: number, opts: { since?: number; filter?: string | RegExp } = {}): Promise<EventPage> {
+  async readEvents(
+    tabId: number,
+    opts: { since?: number; filter?: string | RegExp } = {},
+  ): Promise<EventPage> {
     const parts = [`tabId=${tabId}`];
     if (opts.since) parts.push(`since=${opts.since}`);
     if (opts.filter) {

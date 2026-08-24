@@ -11,7 +11,12 @@
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { RelayClient, RelayError, PageJsError, isRelayConnectionFailure } from "./fixtures/lilto-client.ts";
+import {
+  isRelayConnectionFailure,
+  PageJsError,
+  RelayClient,
+  RelayError,
+} from "./fixtures/lilto-client.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = Number(process.argv[2] || 9232);
@@ -19,23 +24,53 @@ const procs = [];
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function spawnNode(args, env) {
-  const p = spawn(process.execPath, args, { cwd: ROOT, stdio: ["ignore", "ignore", "ignore"], env: { ...process.env, ...env } });
+  const p = spawn(process.execPath, args, {
+    cwd: ROOT,
+    stdio: ["ignore", "ignore", "ignore"],
+    env: { ...process.env, ...env },
+  });
   procs.push(p);
   return p;
 }
-const cleanup = () => { for (const p of procs) { try { p.kill("SIGKILL"); } catch {} } };
+const cleanup = () => {
+  for (const p of procs) {
+    try {
+      p.kill("SIGKILL");
+    } catch {}
+  }
+};
 
 async function pollUntil(fn, tries = 100, gap = 50) {
   for (let i = 0; i < tries; i++) {
-    try { const v = await fn(); if (v) return v; } catch {}
+    try {
+      const v = await fn();
+      if (v) return v;
+    } catch {}
     await wait(gap);
   }
   return null;
 }
 
-let pass = 0, fail = 0;
-const chk = (n, got, want) => { if (got === want) { console.log("PASS", n); pass++; } else { console.log(`FAIL ${n} — got [${got}] want [${want}]`); fail++; } };
-const chkc = (n, got, sub) => { if (String(got).includes(sub)) { console.log("PASS", n); pass++; } else { console.log(`FAIL ${n} — got [${got}] want contains [${sub}]`); fail++; } };
+let pass = 0,
+  fail = 0;
+const chk = (n, got, want) => {
+  if (got === want) {
+    console.log("PASS", n);
+    pass++;
+  } else {
+    console.log(`FAIL ${n} — got [${got}] want [${want}]`);
+    fail++;
+  }
+};
+const chkc = (n, got, sub) => {
+  if (String(got).includes(sub)) {
+    console.log("PASS", n);
+    pass++;
+  } else {
+    console.log(`FAIL ${n} — got [${got}] want contains [${sub}]`);
+    fail++;
+  }
+};
 
 try {
   spawnNode(["daemon/server.mjs", String(PORT)]);
@@ -47,7 +82,8 @@ try {
   spawnNode(["daemon/test-mock-ext.mjs", String(PORT), "browser-A", "shopee-A"]);
 
   const relay = new RelayClient({ base: `http://127.0.0.1:${PORT}`, browser: "shopee-A" });
-  if (!(await pollUntil(async () => (await relay.browsers()).length === 1))) throw new Error("browser never registered");
+  if (!(await pollUntil(async () => (await relay.browsers()).length === 1)))
+    throw new Error("browser never registered");
 
   // --- discovery: the three tab paths lilto actually uses ---
   chk("browsers()", (await relay.browsers()).length, 1);
@@ -56,10 +92,18 @@ try {
   // The mock returns an extra tab only via a real list-tabs, so the two paths are
   // distinguishable — check the cached one FIRST, before a live call refreshes it.
   const cached = await relay.cachedTabs();
-  chk("cachedTabs() does not round-trip to the ext", cached.some((t) => t.url === "mock://fresh-only"), false);
+  chk(
+    "cachedTabs() does not round-trip to the ext",
+    cached.some((t) => t.url === "mock://fresh-only"),
+    false,
+  );
   chk("cachedTabs() still returns the snapshot", cached.length >= 2, true);
   const fresh = await relay.tabs();
-  chk("tabs() does round-trip", fresh.some((t) => t.url === "mock://fresh-only"), true);
+  chk(
+    "tabs() does round-trip",
+    fresh.some((t) => t.url === "mock://fresh-only"),
+    true,
+  );
   chk("findTab() by url regex", (await relay.findTab(/seller\.shopee\.tw/)).tabId, 1001);
 
   // --- the two CDP methods lilto uses, through its own wrappers ---
@@ -74,7 +118,11 @@ try {
   // --- open-tab: needed by openTab/findOrOpenTab, absent before this version ---
   const opened = await relay.openTab("https://example.com/probe");
   chkc("openTab() — /open-tab must exist", opened.url, "example.com/probe");
-  chk("findOrOpenTab() reuses the open one", (await relay.findOrOpenTab(/example\.com\/probe/, "https://example.com/probe")).tabId, opened.tabId);
+  chk(
+    "findOrOpenTab() reuses the open one",
+    (await relay.findOrOpenTab(/example\.com\/probe/, "https://example.com/probe")).tabId,
+    opened.tabId,
+  );
 
   // --- error contract: `error` must still be a plain string ---
   try {

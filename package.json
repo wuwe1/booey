@@ -13,12 +13,23 @@
     "mock-ext": "node daemon/test-mock-ext.mjs",
     "test": "node test/integration.mjs && node test/client.mjs && node test/compat-lilto.mjs",
     "test:compat": "node test/compat-lilto.mjs",
-    "test:client": "node test/client.mjs"
+    "test:client": "node test/client.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check",
+    "lint:fix": "biome check --write",
+    "format": "biome format --write",
+    "format:check": "biome format",
+    "check": "npm run typecheck && npm run lint && npm test"
   },
   "dependencies": {
     "ws": "^8.18.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.18"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.10",
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2"
   }
 }
