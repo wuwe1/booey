@@ -237,6 +237,8 @@ try {
   chk("snapshot rect from DOMSnapshot", JSON.stringify(snapBtn.rect), "[120,480,96,36]");
   chk("snapshot marks the button interactive", snapBtn.int, true);
   chk("snapshot carries a 16-hex elementHash", /^[0-9a-f]{16}$/.test(snapBtn.elementHash), true);
+  chk("snapshot carries indexedText", snap.indexedText.includes("[1]<button"), true);
+  chk("snapshot selectorMap maps index→node", snap.selectorMap["1"]?.tag, "button");
   chk("snapshot revision matches page revision", snap.revision, await relay.revision(1001));
 
   const sr1 = await relay.snapshotRead(1001);

@@ -2,7 +2,13 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildSnapshot, type DomNode, type FrameTrees, mergeFrame } from "../daemon/page-model.ts";
+import {
+  buildSnapshot,
+  type DomNode,
+  type FrameTrees,
+  mergeFrame,
+  serialize,
+} from "../daemon/page-model.ts";
 
 /** 一棵最小的 DOM 树：html > body > (button, div > [a, a])。 */
 function sampleDom(): DomNode {
@@ -229,4 +235,35 @@ test("parentBranchHash 只看结构路径，不看属性/名字", () => {
   assert.equal(a.parentBranchHash, b.parentBranchHash);
   // 属性不同 → elementHash 不同。
   assert.notEqual(a.elementHash, b.elementHash);
+});
+
+test("serialize 只给可见且有语义的节点分配 index", () => {
+  const { selectorMap } = serialize(mergeFrame(frame()));
+  // 有语义的：button(4) + 两个 a(6,7)；html/body/div 是纯结构，不占 index。
+  assert.equal(Object.keys(selectorMap).length, 3);
+  assert.equal(selectorMap[1]?.tag, "button");
+  assert.equal(selectorMap[2]?.tag, "a");
+  assert.equal(selectorMap[3]?.tag, "a");
+});
+
+test("serialize 行格式：有 name 闭合，属性 k=v，class 含空格加引号", () => {
+  const { indexedText } = serialize(mergeFrame(frame()));
+  assert.match(
+    indexedText,
+    /\[1\]<button id=add-cart class="btn primary" type=submit>加入购物车<\/button>/,
+  );
+  assert.match(indexedText, /\[2\]<a href=\/a>A<\/a>/);
+});
+
+test("serialize 用 tab 表达层级：a 缩进在 div 下，button 顶层", () => {
+  const { indexedText } = serialize(mergeFrame(frame()));
+  assert.ok(indexedText.startsWith("[1]<button"));
+  assert.match(indexedText, /\t\[2\]<a/);
+});
+
+test("serialize 的 * 标记本次新出现的节点（is_new）", () => {
+  const nodes = mergeFrame(frame());
+  const { indexedText } = serialize(nodes, new Set(["0-6", "0-7"]));
+  assert.match(indexedText, /\*\[1\]<button/); // button 不在 prev 里 → 新
+  assert.doesNotMatch(indexedText, /\*\[2\]<a/); // a 在 prev 里 → 不新
 });

@@ -113,7 +113,7 @@ processes and asserts multi-browser addressing (by id and label), error codes
 three concurrency levels, response pairing across a give-up, detach-cancels-
 inflight, event subscription/filtering, the `/events` cursor, the CLI round-trip,
 and same-id reconnect. `npm test` runs three suites in order — expect
-`PASS=55` (protocol), `PASS=61` (client), `PASS=16` (lilto compat), all
+`PASS=55` (protocol), `PASS=63` (client), `PASS=16` (lilto compat), all
 `FAIL=0`, exit 0.
 
 The daemon under test runs with `CDP_RELAY_CMD_TIMEOUT_MS=500` (give-up path)
@@ -235,14 +235,16 @@ Do **not** add a `Co-Authored-By` trailer. Push only when the user asks.
   real OOPIF — see SPEC's "Sessions" section. Same release adds the per-tab page
   `revision` (`GET /page`), the `dom` event preset, and `attach({sessions:true})`
   with a per-tab session pool (`GET /sessions`).
-- **v6** the `snapshot` command + `POST/GET /snapshot`: the first half of the L2
-  page model. The ext fetches the three trees per frame (`DOM.getDocument` +
-  `Accessibility.getFullAXTree` + `DOMSnapshot.captureSnapshot`) and the daemon
-  merges them into flat `NodeRecord`s (`daemon/page-model.ts`) — id/parent/tag/
-  role/name/attrs/rect/vis/int/xp, plus `elementHash`/`parentBranchHash`
-  (browser-use's `compute_stable_hash` / `parent_branch_hash`: sha256 of the tag
-  path + static attrs + ax name, dynamic classes filtered), with sibling-index
-  XPath and a per-tab snapshot cache keyed to the page `revision`.
+- **v6** the `snapshot` command + `POST/GET /snapshot`: the L2 page-model
+  pipeline (design doc milestones C/D/E). The ext fetches the three trees per
+  frame (`DOM.getDocument` + `Accessibility.getFullAXTree` +
+  `DOMSnapshot.captureSnapshot`) and the daemon (`daemon/page-model.ts`) merges
+  them into flat `NodeRecord`s — id/parent/tag/role/name/attrs/rect/vis/int/xp,
+  plus `elementHash`/`parentBranchHash` (browser-use's `compute_stable_hash` /
+  `parent_branch_hash`: sha256 of the tag path + static attrs + ax name, dynamic
+  classes filtered) and sibling-index XPath — then serializes them into
+  `indexedText` + `selectorMap` (the `[12]<button …>` form an LLM reads, `*`
+  marking new nodes). A per-tab snapshot cache is keyed to the page `revision`.
 
 v3 and v4 were motivated by an audit against `browserbase/stagehand` and
 `browser-use` (see `docs/cdp-relay-design.md`, which also carries the measured

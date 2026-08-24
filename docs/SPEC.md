@@ -408,6 +408,23 @@ with `stale` set when the revision has since advanced — the page moved after t
 snapshot, so any `index`/`xp` a caller is holding may be wrong. The cache is
 cleared on attach / detach / `detached` (same as the event cache).
 
+The snapshot also carries the LLM-facing serialization (design doc §5.3a/b):
+
+```jsonc
+{
+  "indexedText": "[1]<button id=add-cart type=submit>加入购物车</button>\n\t[2]<a href=/cart>A</a>",
+  "selectorMap": { "1": { /* NodeRecord */ }, "2": { /* NodeRecord */ } }
+}
+```
+
+`indexedText` assigns a 1-based `index` to every visible, meaningful node
+(interactive, or with an AX role/name); structural containers (`div`/`span`)
+don't take a line but still indent their children, so the tree shape survives.
+A leading `*` (`*[5]<…>`) marks nodes new since the previous snapshot (browser-use's
+`is_new`, keyed on `frameOrdinal-backendNodeId`). `selectorMap[index]` is the
+NodeRecord to act on — the index is the only thing an LLM needs to say; the daemon
+resolves it to `xp`/`elementHash`.
+
 ## Idempotency
 
 - `attach` already attached → 200 `{ok:true}` (no-op)

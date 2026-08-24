@@ -74,6 +74,10 @@ export interface Snapshot {
   url: string;
   frames: Array<{ frameOrdinal: number; url: string }>;
   nodes: NodeRecord[];
+  /** 给 LLM 的带索引文本（设计文档 §5.3a）。 */
+  indexedText: string;
+  /** index → NodeRecord。LLM 说 index，daemon 查这个拿 xpath/elementHash。 */
+  selectorMap: Record<number, NodeRecord>;
 }
 
 const NODE_TYPE_ELEMENT = 1;
@@ -369,14 +373,105 @@ export function mergeFrame(frame: FrameTrees): NodeRecord[] {
   return out;
 }
 
+// ---- serializer（设计文档 §5.3a/b，E 的后半）----
+//
+// 把扁平 NodeRecord[] 变回树（按 parent 分组），只给「可见且有语义」的节点
+// （int 或 role 或 name）分配连续 index 并输出一行；纯结构容器（div/span 之类
+// 没有 role/name 也不可交互的）不占行，只透传子节点，所以缩进仍然表达层级。
+// 不可见且没有可见语义后代的子树自然什么都不输出——这就是 §5.2 剪枝的简化版。
+// （「先出不剪枝」的分量：真剪枝要加 scrollable/iframe 宿主保留，接在跨 frame 后。）
+
+export interface SerializedPage {
+  indexedText: string;
+  selectorMap: Record<number, NodeRecord>;
+}
+
+/** 属性 → `key=value`。含空格的值加引号（class="btn primary"），空值 key=''。 */
+function formatAttr(key: string, value: string): string {
+  const val = value.length > 100 ? value.slice(0, 100) : value;
+  if (val === "") return `${key}=''`;
+  return /\s/.test(val) ? `${key}="${val}"` : `${key}=${val}`;
+}
+
+function formatLine(node: NodeRecord, index: number, depth: number, isNew: boolean): string {
+  const indent = "\t".repeat(depth);
+  const star = isNew ? "*" : "";
+  const attrs = Object.entries(node.attrs)
+    .map(([k, v]) => formatAttr(k, v))
+    .join(" ");
+  const attrStr = attrs ? ` ${attrs}` : "";
+  // 有 accessible name 就把它当元素内容（更接近 HTML，省 token）；没有就自闭合。
+  const body = node.name ? `>${node.name}</${node.tag}>` : " />";
+  return `${indent}${star}[${index}]<${node.tag}${attrStr}${body}`;
+}
+
+/**
+ * 序列化成 `[12]<button id=add-cart>加入购物车</button>` 这种文本（§5.3a），
+ * 并产出 selectorMap。`previousIds` 是上次快照的节点 id 集合，用来打 `*`
+ * （本次新出现的节点，browser-use 的 is_new——对「点击后有什么变化」极有用）。
+ */
+export function serialize(nodes: NodeRecord[], previousIds?: Set<string>): SerializedPage {
+  const byParent = new Map<string | null, NodeRecord[]>();
+  for (const n of nodes) {
+    const list = byParent.get(n.parent);
+    if (list) list.push(n);
+    else byParent.set(n.parent, [n]);
+  }
+
+  const isSemantic = (n: NodeRecord): boolean => n.vis && (n.int || n.role !== "" || n.name !== "");
+
+  // 自底向上：subtree 里有没有「可见且有语义」的节点。整棵没有就剪掉（§5.2 的
+  // 简化剪枝：只留可见+有 role/name/可交互的，及其祖先链）。
+  const hasMeaningful = new Map<string, boolean>();
+  const compute = (node: NodeRecord): boolean => {
+    const children = byParent.get(node.id) ?? [];
+    // 显式遍历：children.some(compute) 会短路，导致后面的 child 不被标记。
+    let childHas = false;
+    for (const child of children) if (compute(child)) childHas = true;
+    const val = isSemantic(node) || childHas;
+    hasMeaningful.set(node.id, val);
+    return val;
+  };
+  for (const root of byParent.get(null) ?? []) compute(root);
+
+  const selectorMap: Record<number, NodeRecord> = {};
+  const lines: string[] = [];
+  let counter = 0;
+
+  const walk = (node: NodeRecord, depth: number): void => {
+    const children = byParent.get(node.id) ?? [];
+    if (isSemantic(node)) {
+      const index = ++counter;
+      selectorMap[index] = node;
+      lines.push(formatLine(node, index, depth, previousIds ? !previousIds.has(node.id) : false));
+      for (const child of children) walk(child, depth + 1);
+    } else if (hasMeaningful.get(node.id)) {
+      // 纯结构容器但有语义后代：不占行，只贡献一层缩进。html/body 是文档骨架，不占。
+      const next = node.tag === "html" || node.tag === "body" ? depth : depth + 1;
+      for (const child of children) walk(child, next);
+    }
+    // 无语义且无语义后代 → 整棵丢弃。
+  };
+
+  for (const root of byParent.get(null) ?? []) walk(root, 0);
+  return { indexedText: lines.join("\n"), selectorMap };
+}
+
 /** 合并所有 frame（C 核心先单 frame；跨 frame 的宿主拼接在后续）→ 快照。 */
-export function buildSnapshot(frames: FrameTrees[], revision: number): Snapshot {
+export function buildSnapshot(
+  frames: FrameTrees[],
+  revision: number,
+  previousIds?: Set<string>,
+): Snapshot {
   const nodes: NodeRecord[] = [];
   for (const frame of frames) nodes.push(...mergeFrame(frame));
+  const { indexedText, selectorMap } = serialize(nodes, previousIds);
   return {
     revision,
     url: frames[0]?.url ?? "",
     frames: frames.map((f) => ({ frameOrdinal: f.frameOrdinal, url: f.url })),
     nodes,
+    indexedText,
+    selectorMap,
   };
 }

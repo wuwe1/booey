@@ -599,7 +599,9 @@ export class ExtConn {
     const r = await this.callExt({ type: "snapshot", tabId, frames: [{ frameOrdinal: 0 }] });
     if (!r.ok) return r;
     const revision = this.pageState.get(tabId)?.revision ?? 0;
-    const snap = buildSnapshot(r.result?.frames ?? [], revision);
+    const prev = this.snapshots.get(tabId)?.snapshot;
+    const prevIds = prev ? new Set(prev.nodes.map((n) => n.id)) : undefined;
+    const snap = buildSnapshot(r.result?.frames ?? [], revision, prevIds);
     this.snapshots.set(tabId, { revision, snapshot: snap });
     return { ok: true, result: snap };
   }

@@ -185,6 +185,10 @@ export interface Snapshot {
   url: string;
   frames: Array<{ frameOrdinal: number; url: string }>;
   nodes: NodeRecord[];
+  /** 给 LLM 的带索引文本（`[12]<button …>`，`*` 标新节点）。 */
+  indexedText: string;
+  /** index → NodeRecord。LLM 说 index，查这个拿 xp/elementHash。 */
+  selectorMap: Record<number, NodeRecord>;
 }
 
 export interface SnapshotState {
