@@ -312,7 +312,20 @@ try {
     "id" in (await sendA(1001, "Runtime.evaluate", {})).body,
     false,
   );
-  chk("status version", (await jget("/status")).body.version, 5);
+  chk("status version", (await jget("/status")).body.version, 6);
+
+  // ---- v6: snapshot (page model) ----
+  const snap = await jpost("/snapshot", { browser: "shopee-A", tabId: 1001 });
+  chk("snapshot ok", snap.body.ok, true);
+  const snapBtn = snap.body.result.nodes.find((n) => n.tag === "button");
+  chkc("snapshot merges role+name", `${snapBtn.role}:${snapBtn.name}`, "button:加入购物车");
+  chk("snapshot XPath sibling-indexed", snapBtn.xp, "/html[1]/body[1]/button[1]");
+  const snapCached = (await jget("/snapshot?browser=shopee-A&tabId=1001")).body;
+  chk(
+    "GET /snapshot serves the cache",
+    snapCached.snapshot.nodes.length,
+    snap.body.result.nodes.length,
+  );
 
   // CLI layer
   chkc("CLI eval A", cli("eval", "1001", "x", "--browser", "shopee-A"), "shopee-A (mock)");

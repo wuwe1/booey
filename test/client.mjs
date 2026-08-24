@@ -228,6 +228,23 @@ try {
   chk("settled() reports quiet:false while the page churns", busy.quiet, false);
   await wait(600);
 
+  // ---- v6: snapshot (page model) ----
+  const snap = await relay.snapshot(1001);
+  const snapBtn = snap.nodes.find((n) => n.tag === "button");
+  chk("snapshot returns nodes", snap.nodes.length > 0, true);
+  chkc("snapshot merges role+name", `${snapBtn.role}:${snapBtn.name}`, "button:加入购物车");
+  chk("snapshot XPath sibling-indexed", snapBtn.xp, "/html[1]/body[1]/button[1]");
+  chk("snapshot rect from DOMSnapshot", JSON.stringify(snapBtn.rect), "[120,480,96,36]");
+  chk("snapshot marks the button interactive", snapBtn.int, true);
+  chk("snapshot revision matches page revision", snap.revision, await relay.revision(1001));
+
+  const sr1 = await relay.snapshotRead(1001);
+  chk("snapshotRead serves the cache", sr1.snapshot.nodes.length, snap.nodes.length);
+  chk("snapshotRead not stale when quiet", sr1.stale, false);
+  await relay.send(1001, "Test.dirty", { method: "Page.loadEventFired" });
+  await wait(200);
+  chk("snapshotRead stale after a dirty event", (await relay.snapshotRead(1001)).stale, true);
+
   // ---- errors carry codes, not prose ----
   try {
     await relay.eval(9999, "1");

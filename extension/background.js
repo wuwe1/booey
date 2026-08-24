@@ -15,7 +15,7 @@
 // daemon address multiple browsers. Do NOT bake an id into the build — the
 // extension build id is identical across browsers and can't tell them apart.
 
-const PROTOCOL_VERSION = 5;
+const PROTOCOL_VERSION = 6;
 const DEFAULT_PORT = 9224; // must match daemon/config.mjs; 9223 is the legacy v1 relay
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 15_000;
@@ -340,6 +340,34 @@ async function runCommand(m) {
       return {};
     case "cdp":
       return await sendCdp(m.tabId, m.method, m.params || {}, m.sessionId);
+    case "snapshot": {
+      // 逐 frame 取三棵树，并发发出去。ext 只做 chrome.debugger I/O，不碰语义：
+      // 合并、XPath、身份都是 daemon 的活（设计文档 §4 的分工）。
+      const frames = Array.isArray(m.frames) ? m.frames : [{ frameOrdinal: 0 }];
+      const list = await Promise.all(frames.map(async (f) => {
+        // AX 树要先 enable Accessibility（幂等）；失败不致命，getFullAXTree 会兜底。
+        await sendCdp(m.tabId, "Accessibility.enable", {}, f.sessionId).catch(() => {});
+        const [dom, ax, snapshot] = await Promise.all([
+          sendCdp(m.tabId, "DOM.getDocument", { depth: -1, pierce: true }, f.sessionId),
+          sendCdp(m.tabId, "Accessibility.getFullAXTree", {}, f.sessionId),
+          sendCdp(m.tabId, "DOMSnapshot.captureSnapshot", {
+            computedStyles: [],
+            includeDOMRects: true,
+            includePaintOrder: true,
+            includeBlendedBackgroundColors: false,
+            includeTextColorOpacities: false,
+          }, f.sessionId),
+        ]);
+        return {
+          frameOrdinal: f.frameOrdinal,
+          url: (dom && dom.root && dom.root.documentURL) || "",
+          dom: dom && dom.root,
+          ax,
+          snapshot,
+        };
+      }));
+      return { frames: list };
+    }
     default:
       throw new Error("unknown command type: " + m.type);
   }

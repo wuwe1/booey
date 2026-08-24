@@ -113,6 +113,10 @@ async function handleHttp(req: http.IncomingMessage, res: http.ServerResponse): 
     const conn = registry.resolve(url.searchParams.get("browser"));
     return sendJson(res, 200, conn.page(num(url.searchParams.get("tabId"))));
   }
+  if (method === "GET" && path === "/snapshot") {
+    const conn = registry.resolve(url.searchParams.get("browser"));
+    return sendJson(res, 200, conn.snapshotRead(num(url.searchParams.get("tabId"))));
+  }
   if (method === "GET" && path === "/events/subscribe") {
     const conn = registry.resolve(url.searchParams.get("browser"));
     const tabId = num(url.searchParams.get("tabId"));
@@ -176,6 +180,10 @@ async function handleHttp(req: http.IncomingMessage, res: http.ServerResponse): 
       const conn = registry.resolve(body.browser);
       conn.clearTabCache(num(body.tabId));
       return sendJson(res, 200, { ok: true });
+    }
+    if (path === "/snapshot") {
+      const conn = registry.resolve(body.browser);
+      return sendJson(res, 200, await conn.snapshot(num(body.tabId)));
     }
   }
 

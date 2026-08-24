@@ -21,7 +21,7 @@
 // the /events cursor without reattaching.
 import WebSocket from "ws";
 
-const PROTOCOL_VERSION = 5;
+const PROTOCOL_VERSION = 6;
 const PORT = Number(process.argv[2] || 9229);
 const ID = process.argv[3] || `mock-${process.pid}`;
 const LABEL = process.argv[4] || "";
@@ -238,6 +238,62 @@ async function handleCommand(m: any): Promise<any> {
       return {};
     case "cdp":
       return await runCdp(m);
+    case "snapshot": {
+      // 合成一棵「html>body>button」的最小页面，让 daemon 的合并/XPath 有东西可断言。
+      const frames = (Array.isArray(m.frames) ? m.frames : [{ frameOrdinal: 0 }]).map((f: any) => ({
+        frameOrdinal: f.frameOrdinal,
+        url: "https://seller.shopee.tw/portal/product/list",
+        dom: {
+          nodeType: 9,
+          nodeName: "#document",
+          backendNodeId: 1,
+          children: [
+            {
+              nodeType: 1,
+              nodeName: "html",
+              localName: "html",
+              backendNodeId: 2,
+              children: [
+                {
+                  nodeType: 1,
+                  nodeName: "body",
+                  localName: "body",
+                  backendNodeId: 3,
+                  children: [
+                    {
+                      nodeType: 1,
+                      nodeName: "button",
+                      localName: "button",
+                      backendNodeId: 4,
+                      attributes: ["id", "add-cart", "type", "submit", "class", "btn primary"],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        ax: {
+          nodes: [
+            {
+              backendDOMNodeId: 4,
+              role: { value: "button" },
+              name: { value: "加入购物车" },
+              ignored: false,
+            },
+          ],
+        },
+        snapshot: {
+          documents: [
+            {
+              nodes: { backendNodeId: [4] },
+              layout: { nodeIndex: [0], bounds: [[120, 480, 96, 36]] },
+            },
+          ],
+        },
+      }));
+      return { frames };
+    }
     default:
       throw new Error("unknown command type: " + m.type);
   }

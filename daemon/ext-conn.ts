@@ -34,6 +34,7 @@ import {
   UNORDERED_CDP_METHODS,
 } from "./config.ts";
 import { httpError } from "./http-error.ts";
+import { buildSnapshot, type Snapshot } from "./page-model.ts";
 import { RingBuffer } from "./ring-buffer.ts";
 
 /** Lane key for commands that address the browser rather than a tab. */
@@ -159,6 +160,8 @@ export class ExtConn {
    * nothing here is a durable handle on a frame.
    */
   sessions: Map<number, Map<string, SessionInfo>>;
+  /** tabId → 最近一次快照及其 revision。GET /snapshot 靠它判断是否 stale。 */
+  snapshots: Map<number, { revision: number; snapshot: Snapshot }>;
 
   _onHello: (c: ExtConn) => void;
   _onClose: (c: ExtConn) => void;
@@ -189,6 +192,7 @@ export class ExtConn {
     this.stats = null;
     this.pageState = new Map();
     this.sessions = new Map();
+    this.snapshots = new Map();
 
     this._onHello = onHello;
     this._onClose = onClose;
@@ -580,6 +584,40 @@ export class ExtConn {
     return { ok: true, result: { sessions: this.sessionList(tabId) } };
   }
 
+  // ---- page model (snapshot) ----
+
+  /**
+   * 取当前页面的三棵树、合并成 NodeRecord 快照，并缓存到 snapshots。
+   *
+   * C 核心先只取主 frame（frameOrdinal 0）；OOPIF 跨 frame 合并接在 session 池
+   * 之后（设计文档里程碑 C 的跨 frame 那一半）。快照是「某 revision 的页面照片」，
+   * 页面一旦被 dirty 事件 bump 了 revision，这张照片就 stale 了。
+   */
+  async snapshot(tabId: number): Promise<ExtResult> {
+    if (!this.attachedTabs.has(tabId))
+      throw httpError(409, `tab ${tabId} not attached`, { code: "TAB_NOT_ATTACHED" });
+    const r = await this.callExt({ type: "snapshot", tabId, frames: [{ frameOrdinal: 0 }] });
+    if (!r.ok) return r;
+    const revision = this.pageState.get(tabId)?.revision ?? 0;
+    const snap = buildSnapshot(r.result?.frames ?? [], revision);
+    this.snapshots.set(tabId, { revision, snapshot: snap });
+    return { ok: true, result: snap };
+  }
+
+  /**
+   * 读缓存的快照。`stale` 表示缓存的 revision 已落后于当前 revision——页面在
+   * 快照之后又动过，调用方手上的 index/xpath 可能已经失效。没有缓存时 404。
+   */
+  snapshotRead(tabId: number): { tabId: number; snapshot: Snapshot; stale: boolean } {
+    const cached = this.snapshots.get(tabId);
+    if (!cached)
+      throw httpError(404, `no snapshot cached for tab ${tabId}; POST /snapshot first`, {
+        code: "NOT_FOUND",
+      });
+    const current = this.pageState.get(tabId)?.revision ?? 0;
+    return { tabId, snapshot: cached.snapshot, stale: current !== cached.revision };
+  }
+
   // ---- page revision ----
 
   bumpRevision(tabId: number, method: string, ts: number): void {
@@ -636,6 +674,8 @@ export class ExtConn {
     // Sessions die with the attachment; keeping them would hand out sessionIds
     // the browser has already invalidated.
     this.sessions.delete(tabId);
+    // A snapshot is a picture of a page at one revision; drop it with the rest.
+    this.snapshots.delete(tabId);
   }
 
   eventCount(): number {

@@ -153,6 +153,43 @@ export interface PageState {
   url: string;
 }
 
+/** 一个合并后的元素节点（设计文档 §5.2 的 NodeRecord）。 */
+export interface NodeRecord {
+  /** `${frameOrdinal}-${backendNodeId}`，单次快照内的稳定地址。 */
+  id: string;
+  /** 父节点的 id；根元素为 null。 */
+  parent: string | null;
+  tag: string;
+  /** AX role，无则空串。 */
+  role: string;
+  /** AX accessible name，无则空串。 */
+  name: string;
+  /** 白名单属性（id/class/type/aria-* 等）。 */
+  attrs: Record<string, string>;
+  /** [x, y, width, height]，来自 DOMSnapshot；无几何则为 null。 */
+  rect: [number, number, number, number] | null;
+  /** 可见（有几何，或 AX 非 ignored）。 */
+  vis: boolean;
+  /** 可交互（可见且 role 属于交互集合）。 */
+  int: boolean;
+  /** frame 内相对 XPath（兄弟序号，如 /html[1]/body[1]/button[1]）。 */
+  xp: string;
+}
+
+export interface Snapshot {
+  revision: number;
+  url: string;
+  frames: Array<{ frameOrdinal: number; url: string }>;
+  nodes: NodeRecord[];
+}
+
+export interface SnapshotState {
+  tabId: number;
+  snapshot: Snapshot;
+  /** 页面在快照之后又动过（revision 前进）——手上的 index/xpath 可能已失效。 */
+  stale: boolean;
+}
+
 export interface EventPage {
   events: RelayEvent[];
   /** Pass as `since` next time to read only what is new. */
@@ -529,6 +566,23 @@ export class RelayClient {
 
   async revision(tabId: number): Promise<number> {
     return (await this.page(tabId)).revision;
+  }
+
+  /**
+   * 合并三棵 CDP 树（DOM + Accessibility + DOMSnapshot）成一份页面快照。
+   *
+   * `nodes` 是扁平的 NodeRecord，`id` 是 `${frameOrdinal}-${backendNodeId}`，
+   * `xp` 是兄弟序号 XPath。这是 L2 页面模型的数据管线（设计文档里程碑 C）。
+   * 每次 POST 都重新取树并缓存到 daemon。
+   */
+  async snapshot(tabId: number): Promise<Snapshot> {
+    const r = await this.req<{ ok: true; result: Snapshot }>("POST", "/snapshot", { tabId });
+    return r.result;
+  }
+
+  /** 读 daemon 缓存的快照（不重新取树）。`stale` = 页面在快照后又动过。 */
+  async snapshotRead(tabId: number): Promise<SnapshotState> {
+    return await this.req<SnapshotState>("GET", `/snapshot?tabId=${tabId}`);
   }
 
   /**

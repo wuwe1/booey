@@ -1,4 +1,4 @@
-# cdp-relay SPEC (protocol v5)
+# cdp-relay SPEC (protocol v6)
 
 Contract between the three segments: daemon / ext / CLI. This file is the
 **contract** only — message schema, HTTP endpoints, error codes, addressing.
@@ -152,13 +152,13 @@ in whatever order the answers come back; ordering is entirely the daemon's job.
 ### Hello (first message after connect, required)
 
 ```js
-{ type: "hello", version: 5, id: "<browserId>", label: "<string>", tabs: [{ tabId, url, title }, ...] }
+{ type: "hello", version: 6, id: "<browserId>", label: "<string>", tabs: [{ tabId, url, title }, ...] }
 ```
 
 Note `id` here is the **browserId** (a string), unrelated to the numeric message
 id on commands.
 
-`version` must equal `5` and `id` must be a non-empty string, else the daemon
+`version` must equal `6` and `id` must be a non-empty string, else the daemon
 closes with code `4000` (version/id mismatch ⇒ ext stops reconnecting). `label`
 may be `""`. A second hello on the same connection (e.g. after the user edits
 the label) is allowed and updates the label in place.
@@ -171,6 +171,7 @@ the label) is allowed and updates the label in place.
 { id, type: "events.set", tabId, events: [selector] }  // replace the subscription
 { id, type: "detach",     tabId }
 { id, type: "list-tabs" }
+{ id, type: "snapshot",   tabId, frames: [{frameOrdinal, sessionId?}] }  // fetch the three trees
 { type: "ping" }                                   // push: no id, answered by `pong`
 ```
 
@@ -188,7 +189,7 @@ re-pushing the same state is free and repairs drift after a reconnect.
 { id, ok: false, error: { message } }          // chrome.debugger error, no code
 
 // pushes (no corresponding request)
-{ type: "hello", version: 5, id, label, tabs }
+{ type: "hello", version: 6, id, label, tabs }
 { type: "event", tabId, method, params, sessionId? }   // sessionId ⇒ from an OOPIF/worker
 { type: "tabs-changed", tabs: [...] }
 { type: "detached", tabId, reason }
@@ -227,6 +228,8 @@ POST /shutdown                                   → { ok: true }
 
 GET  /tabs?browser=<id|label>[&fresh=0]          → { tabs: [{tabId, url, title}] }
 GET  /page?browser=<>&tabId=N                    → { tabId, attached, revision, lastDirty, events, url }
+GET  /snapshot?browser=<>&tabId=N                → { tabId, snapshot, stale }
+POST /snapshot       {browser?, tabId}           → { ok: true, result: Snapshot }
 GET  /sessions?browser=<>&tabId=N                → { tabId, sessions: [{sessionId, targetId, type, url, openedAt}] }
 POST /sessions/enable  {browser?, tabId}         → { ok: true, result:{ sessions } }
 POST /open-tab      {browser?, url}              → { ok: true, result:{tab} }
@@ -340,6 +343,59 @@ held. `filter` is a regex matched against `method`.
 Event cache is per `(browserId, tabId)`, a ring buffer (cap 1000; override with
 `CDP_RELAY_EVENT_CACHE_CAP`). Cleared on `attach` / `detach` / ext `detached`
 push / `events/clear`.
+
+## Page model (snapshot)
+
+v6 adds the first half of the L2 page model: a `snapshot` that merges the three
+CDP trees into flat `NodeRecord`s (design doc §5.2). The extension stays thin —
+it fetches the trees and returns them raw; all merging, XPath, and identity are
+the daemon's.
+
+```
+POST /snapshot {browser?, tabId}
+  → { ok: true, result: Snapshot }          // re-fetches the trees, caches, returns
+GET  /snapshot?browser=<>&tabId=N
+  → { tabId, snapshot: Snapshot, stale }    // reads the cache; no tree round-trip
+```
+
+The ext command behind it:
+
+```js
+{ id, type: "snapshot", tabId, frames: [{ frameOrdinal, sessionId? }] }
+// → { frames: [{ frameOrdinal, url, dom, ax, snapshot }] }
+```
+
+`frames[0]` is the main frame (`frameOrdinal: 0`, no `sessionId`); further entries
+address flat auto-attached OOPIF sessions. For each frame the ext concurrently
+sends `DOM.getDocument{depth:-1,pierce:true}`, `Accessibility.getFullAXTree`, and
+`DOMSnapshot.captureSnapshot{includeDOMRects, includePaintOrder}`, and returns the
+three trees untouched. (C-core today only requests the main frame; splicing the
+OOPIF frames under their hosts is the next half of the milestone.)
+
+The daemon merges the trees keyed on `backendNodeId` — the DOM tree is the spine,
+AX nodes attach `role`/`name` by `backendDOMNodeId`, the snapshot attaches `rect`
+by `backendNodeId` — and emits a flat `NodeRecord[]`:
+
+```jsonc
+{
+  "id": "0-1847",              // frameOrdinal-backendNodeId (stagehand EncodedId)
+  "parent": "0-1840",          // parent's id, null for the root element
+  "tag": "button",
+  "role": "button",            // AX role, "" when absent
+  "name": "加入购物车",        // AX accessible name, "" when absent
+  "attrs": { "id": "add-cart", "type": "submit" },  // whitelist
+  "rect": [120, 480, 96, 36],  // [x,y,w,h] from DOMSnapshot, null without geometry
+  "vis": true,                 // has geometry, or AX non-ignored
+  "int": true,                 // visible and an interactive role
+  "xp": "/html[1]/body[1]/button[1]"   // sibling-index XPath (stagehand algorithm)
+}
+```
+
+A `Snapshot` is a picture of the page at one `revision`. `POST /snapshot` stores
+it keyed to the revision at capture time; `GET /snapshot` returns the cached one
+with `stale` set when the revision has since advanced — the page moved after the
+snapshot, so any `index`/`xp` a caller is holding may be wrong. The cache is
+cleared on attach / detach / `detached` (same as the event cache).
 
 ## Idempotency
 

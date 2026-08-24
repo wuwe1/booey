@@ -113,7 +113,7 @@ processes and asserts multi-browser addressing (by id and label), error codes
 three concurrency levels, response pairing across a give-up, detach-cancels-
 inflight, event subscription/filtering, the `/events` cursor, the CLI round-trip,
 and same-id reconnect. `npm test` runs three suites in order — expect
-`PASS=51` (protocol), `PASS=51` (client), `PASS=16` (lilto compat), all
+`PASS=55` (protocol), `PASS=60` (client), `PASS=16` (lilto compat), all
 `FAIL=0`, exit 0.
 
 The daemon under test runs with `CDP_RELAY_CMD_TIMEOUT_MS=500` (give-up path)
@@ -235,6 +235,12 @@ Do **not** add a `Co-Authored-By` trailer. Push only when the user asks.
   real OOPIF — see SPEC's "Sessions" section. Same release adds the per-tab page
   `revision` (`GET /page`), the `dom` event preset, and `attach({sessions:true})`
   with a per-tab session pool (`GET /sessions`).
+- **v6** the `snapshot` command + `POST/GET /snapshot`: the first half of the L2
+  page model. The ext fetches the three trees per frame (`DOM.getDocument` +
+  `Accessibility.getFullAXTree` + `DOMSnapshot.captureSnapshot`) and the daemon
+  merges them into flat `NodeRecord`s (`daemon/page-model.ts`) — id/parent/tag/
+  role/name/attrs/rect/vis/int/xp, with sibling-index XPath and a per-tab
+  snapshot cache keyed to the page `revision`.
 
 v3 and v4 were motivated by an audit against `browserbase/stagehand` and
 `browser-use` (see `~/Developer/browser_agent/docs/cdp-relay-design.md`,
