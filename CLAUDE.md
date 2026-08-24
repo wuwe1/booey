@@ -243,8 +243,9 @@ Do **not** add a `Co-Authored-By` trailer. Push only when the user asks.
   snapshot cache keyed to the page `revision`.
 
 v3 and v4 were motivated by an audit against `browserbase/stagehand` and
-`browser-use` (see `~/Developer/browser_agent/docs/cdp-relay-design.md`,
-which also carries the measured numbers behind these choices).
+`browser-use` (see `docs/cdp-relay-design.md`, which also carries the measured
+numbers behind these choices; the reference checkouts live in
+`~/Developer/browser_agent/`).
 
 ## Provenance
 
