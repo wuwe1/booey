@@ -587,16 +587,21 @@ export class ExtConn {
   // ---- page model (snapshot) ----
 
   /**
-   * 取当前页面的三棵树、合并成 NodeRecord 快照，并缓存到 snapshots。
-   *
-   * C 核心先只取主 frame（frameOrdinal 0）；OOPIF 跨 frame 合并接在 session 池
-   * 之后（设计文档里程碑 C 的跨 frame 那一半）。快照是「某 revision 的页面照片」，
-   * 页面一旦被 dirty 事件 bump 了 revision，这张照片就 stale 了。
+   * 取当前页面所有 frame（主 + session 池里的 OOPIF）的三棵树，合并成 NodeRecord
+   * 快照并跨 frame 拼接，然后缓存。快照是「某 revision 的页面照片」，页面一旦被
+   * dirty 事件 bump 了 revision，这张照片就 stale 了。
    */
   async snapshot(tabId: number): Promise<ExtResult> {
     if (!this.attachedTabs.has(tabId))
       throw httpError(409, `tab ${tabId} not attached`, { code: "TAB_NOT_ATTACHED" });
-    const r = await this.callExt({ type: "snapshot", tabId, frames: [{ frameOrdinal: 0 }] });
+    // 主 frame 是 frameOrdinal 0；session 池里的每个 OOPIF 各占一个 frame，带着
+    // 自己的 sessionId（ext 才能精确进到那个进程）。拼接是 daemon 的活，见
+    // page-model 的 stitchFrames。
+    const frames: Array<{ frameOrdinal: number; sessionId?: string }> = [{ frameOrdinal: 0 }];
+    for (const s of this.sessions.get(tabId)?.values() ?? []) {
+      frames.push({ frameOrdinal: frames.length, sessionId: s.sessionId });
+    }
+    const r = await this.callExt({ type: "snapshot", tabId, frames });
     if (!r.ok) return r;
     const revision = this.pageState.get(tabId)?.revision ?? 0;
     const prev = this.snapshots.get(tabId)?.snapshot;

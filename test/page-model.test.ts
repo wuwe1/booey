@@ -267,3 +267,121 @@ test("serialize 的 * 标记本次新出现的节点（is_new）", () => {
   assert.match(indexedText, /\*\[1\]<button/); // button 不在 prev 里 → 新
   assert.doesNotMatch(indexedText, /\*\[2\]<a/); // a 在 prev 里 → 不新
 });
+
+test("buildSnapshot 跨 frame：子 frame 根挂到 iframe 宿主，XPath 加前缀", () => {
+  const main: FrameTrees = {
+    frameOrdinal: 0,
+    url: "https://seller.example/",
+    dom: {
+      nodeType: 9,
+      nodeName: "#document",
+      backendNodeId: 1,
+      children: [
+        {
+          nodeType: 1,
+          nodeName: "html",
+          localName: "html",
+          backendNodeId: 2,
+          children: [
+            {
+              nodeType: 1,
+              nodeName: "body",
+              localName: "body",
+              backendNodeId: 3,
+              children: [
+                {
+                  nodeType: 1,
+                  nodeName: "button",
+                  localName: "button",
+                  backendNodeId: 4,
+                  attributes: ["id", "go"],
+                },
+                {
+                  nodeType: 1,
+                  nodeName: "iframe",
+                  localName: "iframe",
+                  backendNodeId: 5,
+                  attributes: ["src", "https://example.com/"],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    ax: {
+      nodes: [
+        {
+          backendDOMNodeId: 4,
+          role: { value: "button" },
+          name: { value: "主按钮" },
+          ignored: false,
+        },
+      ],
+    },
+    snapshot: {
+      documents: [
+        { nodes: { backendNodeId: [4] }, layout: { nodeIndex: [0], bounds: [[0, 0, 10, 10]] } },
+      ],
+    },
+  };
+
+  const child: FrameTrees = {
+    frameOrdinal: 1,
+    url: "https://example.com/",
+    dom: {
+      nodeType: 9,
+      nodeName: "#document",
+      backendNodeId: 1,
+      children: [
+        {
+          nodeType: 1,
+          nodeName: "html",
+          localName: "html",
+          backendNodeId: 2,
+          children: [
+            {
+              nodeType: 1,
+              nodeName: "body",
+              localName: "body",
+              backendNodeId: 3,
+              children: [
+                {
+                  nodeType: 1,
+                  nodeName: "input",
+                  localName: "input",
+                  backendNodeId: 4,
+                  attributes: ["type", "text"],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    ax: {
+      nodes: [
+        {
+          backendDOMNodeId: 4,
+          role: { value: "textbox" },
+          name: { value: "子输入" },
+          ignored: false,
+        },
+      ],
+    },
+    snapshot: {
+      documents: [
+        { nodes: { backendNodeId: [4] }, layout: { nodeIndex: [0], bounds: [[0, 0, 10, 10]] } },
+      ],
+    },
+  };
+
+  const snap = buildSnapshot([main, child], 0);
+  const input = snap.nodes.find((n) => n.tag === "input")!;
+  // 子 frame 的根 html（id "1-2"）挂到 iframe 宿主（"0-5"）；input 仍在子 frame 内。
+  assert.equal(snap.nodes.find((n) => n.id === "1-2")?.parent, "0-5");
+  assert.equal(input.parent, "1-3");
+  assert.equal(input.xp, "/html[1]/body[1]/iframe[1]/html[1]/body[1]/input[1]");
+  // 子 frame 的 elementHash 仍是 frame 内 tag 链（html/body/input），不受父 frame 影响。
+  assert.ok(input.elementHash.length === 16);
+});

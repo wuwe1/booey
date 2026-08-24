@@ -239,59 +239,123 @@ async function handleCommand(m: any): Promise<any> {
     case "cdp":
       return await runCdp(m);
     case "snapshot": {
-      // 合成一棵「html>body>button」的最小页面，让 daemon 的合并/XPath 有东西可断言。
-      const frames = (Array.isArray(m.frames) ? m.frames : [{ frameOrdinal: 0 }]).map((f: any) => ({
-        frameOrdinal: f.frameOrdinal,
-        url: "https://seller.shopee.tw/portal/product/list",
-        dom: {
-          nodeType: 9,
-          nodeName: "#document",
-          backendNodeId: 1,
-          children: [
-            {
-              nodeType: 1,
-              nodeName: "html",
-              localName: "html",
-              backendNodeId: 2,
+      // 主 frame：button + iframe 宿主（src 指向子 frame url）；带 sessionId 的子 frame：
+      // 一个 input。这样 daemon 的 stitchFrames 能把子 frame 根挂到 iframe 下、XPath 加前缀。
+      const frames = (Array.isArray(m.frames) ? m.frames : [{ frameOrdinal: 0 }]).map((f: any) => {
+        if (f.sessionId) {
+          return {
+            frameOrdinal: f.frameOrdinal,
+            url: "https://example.com/",
+            dom: {
+              nodeType: 9,
+              nodeName: "#document",
+              backendNodeId: 1,
               children: [
                 {
                   nodeType: 1,
-                  nodeName: "body",
-                  localName: "body",
-                  backendNodeId: 3,
+                  nodeName: "html",
+                  localName: "html",
+                  backendNodeId: 2,
                   children: [
                     {
                       nodeType: 1,
-                      nodeName: "button",
-                      localName: "button",
-                      backendNodeId: 4,
-                      attributes: ["id", "add-cart", "type", "submit", "class", "btn primary"],
+                      nodeName: "body",
+                      localName: "body",
+                      backendNodeId: 3,
+                      children: [
+                        {
+                          nodeType: 1,
+                          nodeName: "input",
+                          localName: "input",
+                          backendNodeId: 4,
+                          attributes: ["type", "text", "placeholder", "iframe 里的输入"],
+                        },
+                      ],
                     },
                   ],
                 },
               ],
             },
-          ],
-        },
-        ax: {
-          nodes: [
-            {
-              backendDOMNodeId: 4,
-              role: { value: "button" },
-              name: { value: "加入购物车" },
-              ignored: false,
+            ax: {
+              nodes: [
+                {
+                  backendDOMNodeId: 4,
+                  role: { value: "textbox" },
+                  name: { value: "子 frame 输入" },
+                  ignored: false,
+                },
+              ],
             },
-          ],
-        },
-        snapshot: {
-          documents: [
-            {
-              nodes: { backendNodeId: [4] },
-              layout: { nodeIndex: [0], bounds: [[120, 480, 96, 36]] },
+            snapshot: {
+              documents: [
+                {
+                  nodes: { backendNodeId: [4] },
+                  layout: { nodeIndex: [0], bounds: [[10, 10, 200, 30]] },
+                },
+              ],
             },
-          ],
-        },
-      }));
+          };
+        }
+        return {
+          frameOrdinal: f.frameOrdinal,
+          url: "https://seller.shopee.tw/portal/product/list",
+          dom: {
+            nodeType: 9,
+            nodeName: "#document",
+            backendNodeId: 1,
+            children: [
+              {
+                nodeType: 1,
+                nodeName: "html",
+                localName: "html",
+                backendNodeId: 2,
+                children: [
+                  {
+                    nodeType: 1,
+                    nodeName: "body",
+                    localName: "body",
+                    backendNodeId: 3,
+                    children: [
+                      {
+                        nodeType: 1,
+                        nodeName: "button",
+                        localName: "button",
+                        backendNodeId: 4,
+                        attributes: ["id", "add-cart", "type", "submit", "class", "btn primary"],
+                      },
+                      {
+                        nodeType: 1,
+                        nodeName: "iframe",
+                        localName: "iframe",
+                        backendNodeId: 5,
+                        attributes: ["src", "https://example.com/"],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+          ax: {
+            nodes: [
+              {
+                backendDOMNodeId: 4,
+                role: { value: "button" },
+                name: { value: "加入购物车" },
+                ignored: false,
+              },
+            ],
+          },
+          snapshot: {
+            documents: [
+              {
+                nodes: { backendNodeId: [4] },
+                layout: { nodeIndex: [0], bounds: [[120, 480, 96, 36]] },
+              },
+            ],
+          },
+        };
+      });
       return { frames };
     }
     default:

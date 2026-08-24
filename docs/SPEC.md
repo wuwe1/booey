@@ -366,11 +366,17 @@ The ext command behind it:
 ```
 
 `frames[0]` is the main frame (`frameOrdinal: 0`, no `sessionId`); further entries
-address flat auto-attached OOPIF sessions. For each frame the ext concurrently
-sends `DOM.getDocument{depth:-1,pierce:true}`, `Accessibility.getFullAXTree`, and
+address flat auto-attached OOPIF sessions, one per pool entry (the daemon appends
+them from its session pool). For each frame the ext concurrently sends
+`DOM.getDocument{depth:-1,pierce:true}`, `Accessibility.getFullAXTree`, and
 `DOMSnapshot.captureSnapshot{includeDOMRects, includePaintOrder}`, and returns the
-three trees untouched. (C-core today only requests the main frame; splicing the
-OOPIF frames under their hosts is the next half of the milestone.)
+three trees untouched.
+
+The daemon then stitches the frames together: each OOPIF frame's root is re-parented
+onto the `iframe`/`frame` host in the parent frame whose `src` matches the child
+frame's `url`, and the child's XPath gets the host's XPath as a prefix (stagehand's
+`prefixXPath`). Host matching by URL is a heuristic — two same-URL iframes would be
+ambiguous; rare in practice, and the mock controls it exactly.
 
 The daemon merges the trees keyed on `backendNodeId` — the DOM tree is the spine,
 AX nodes attach `role`/`name` by `backendDOMNodeId`, the snapshot attaches `rect`

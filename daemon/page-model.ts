@@ -457,14 +457,64 @@ export function serialize(nodes: NodeRecord[], previousIds?: Set<string>): Seria
   return { indexedText: lines.join("\n"), selectorMap };
 }
 
-/** 合并所有 frame（C 核心先单 frame；跨 frame 的宿主拼接在后续）→ 快照。 */
+// ---- 跨 frame 拼接（C 的跨 frame 一半）----
+
+/** stagehand 的 prefixXPath：把子 frame 的相对 XPath 拼到宿主 iframe 的绝对 XPath 后。 */
+function prefixXPath(parentAbs: string, child: string): string {
+  const p = parentAbs === "/" ? "" : parentAbs.replace(/\/$/, "");
+  if (!child || child === "/") return p || "/";
+  if (child.startsWith("//")) return p ? `${p}//${child.slice(2)}` : `//${child.slice(2)}`;
+  const c = child.replace(/^\//, "");
+  return p ? `${p}/${c}` : `/${c}`;
+}
+
+/**
+ * 把每个 OOPIF frame 的根挂到父 frame 里的 iframe 宿主下，并把子 frame 的 XPath
+ * 加上宿主前缀。宿主匹配靠 iframe 的 `src == 子 frame 的 url`——url 匹配是启发式
+ * （同 url 的多个 iframe 会歧义，真实页面少见，mock 可精确控制）。elementHash /
+ * parentBranchHash 不重算：browser-use 也是按 frame 独立算（DOM 树不跨 frame），
+ * 所以子 frame 元素身份不受父 frame 结构变动影响。
+ */
+function stitchFrames(perFrame: Array<{ url: string; nodes: NodeRecord[] }>): NodeRecord[] {
+  const main = perFrame[0];
+  const children = perFrame.slice(1);
+  if (!main) return [];
+  const result = [...main.nodes];
+  if (children.length === 0) return result;
+
+  const byUrl = new Map<string, NodeRecord[]>();
+  for (const child of children) byUrl.set(child.url, child.nodes);
+
+  const used = new Set<string>();
+  for (const node of main.nodes) {
+    if (node.tag !== "iframe" && node.tag !== "frame") continue;
+    const src = node.attrs.src;
+    if (!src) continue;
+    const childNodes = byUrl.get(src);
+    if (!childNodes) continue;
+    used.add(src);
+    for (const child of childNodes) {
+      if (child.parent === null) child.parent = node.id;
+      child.xp = prefixXPath(node.xp, child.xp);
+    }
+    result.push(...childNodes);
+  }
+
+  // 没匹配到宿主的子 frame（url 对不上）：扁平保留，避免内容凭空消失。
+  for (const child of children) {
+    if (!used.has(child.url)) result.push(...child.nodes);
+  }
+  return result;
+}
+
+/** 合并所有 frame 并跨 frame 拼接 → 快照。 */
 export function buildSnapshot(
   frames: FrameTrees[],
   revision: number,
   previousIds?: Set<string>,
 ): Snapshot {
-  const nodes: NodeRecord[] = [];
-  for (const frame of frames) nodes.push(...mergeFrame(frame));
+  const perFrame = frames.map((f) => ({ url: f.url, nodes: mergeFrame(f) }));
+  const nodes = stitchFrames(perFrame);
   const { indexedText, selectorMap } = serialize(nodes, previousIds);
   return {
     revision,

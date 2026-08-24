@@ -248,6 +248,18 @@ try {
   await wait(200);
   chk("snapshotRead stale after a dirty event", (await relay.snapshotRead(1001)).stale, true);
 
+  // ---- cross-frame snapshot（OOPIF 拼到宿主 iframe 下）----
+  await relay.attach(1002, { events: ["nav"], sessions: true });
+  await wait(200);
+  const snap2 = await relay.snapshot(1002);
+  const childInput = snap2.nodes.find((n) => n.tag === "input");
+  chk("cross-frame snapshot stitches the OOPIF input", childInput !== undefined, true);
+  chk(
+    "...with a host-prefixed XPath",
+    childInput.xp,
+    "/html[1]/body[1]/iframe[1]/html[1]/body[1]/input[1]",
+  );
+
   // ---- errors carry codes, not prose ----
   try {
     await relay.eval(9999, "1");
