@@ -1,4 +1,4 @@
-# cdp-relay SPEC (protocol v4)
+# cdp-relay SPEC (protocol v5)
 
 Contract between the three segments: daemon / ext / CLI. This file is the
 **contract** only — message schema, HTTP endpoints, error codes, addressing.
@@ -113,13 +113,13 @@ in whatever order the answers come back; ordering is entirely the daemon's job.
 ### Hello (first message after connect, required)
 
 ```js
-{ type: "hello", version: 4, id: "<browserId>", label: "<string>", tabs: [{ tabId, url, title }, ...] }
+{ type: "hello", version: 5, id: "<browserId>", label: "<string>", tabs: [{ tabId, url, title }, ...] }
 ```
 
 Note `id` here is the **browserId** (a string), unrelated to the numeric message
 id on commands.
 
-`version` must equal `4` and `id` must be a non-empty string, else the daemon
+`version` must equal `5` and `id` must be a non-empty string, else the daemon
 closes with code `4000` (version/id mismatch ⇒ ext stops reconnecting). `label`
 may be `""`. A second hello on the same connection (e.g. after the user edits
 the label) is allowed and updates the label in place.
@@ -127,7 +127,7 @@ the label) is allowed and updates the label in place.
 ### Daemon → Ext
 
 ```js
-{ id, type: "cdp",        tabId, method, params }  // forward any CDP command
+{ id, type: "cdp",        tabId, method, params, sessionId? }  // forward any CDP command
 { id, type: "attach",     tabId, events: [selector] }
 { id, type: "events.set", tabId, events: [selector] }  // replace the subscription
 { id, type: "detach",     tabId }
@@ -149,8 +149,8 @@ re-pushing the same state is free and repairs drift after a reconnect.
 { id, ok: false, error: { message } }          // chrome.debugger error, no code
 
 // pushes (no corresponding request)
-{ type: "hello", version: 4, id, label, tabs }
-{ type: "event", tabId, method, params }
+{ type: "hello", version: 5, id, label, tabs }
+{ type: "event", tabId, method, params, sessionId? }   // sessionId ⇒ from an OOPIF/worker
 { type: "tabs-changed", tabs: [...] }
 { type: "detached", tabId, reason }
 { type: "pong", stats: { matchedEvents, filteredEvents, droppedEvents } }
@@ -190,7 +190,7 @@ GET  /tabs?browser=<id|label>[&fresh=0]          → { tabs: [{tabId, url, title
 POST /open-tab      {browser?, url}              → { ok: true, result:{tab} }
 POST /attach        {browser?, tabId, events?}   → { ok: true, result:{events, enabled, failed} }
 POST /detach        {browser?, tabId}            → { ok: true }
-POST /send          {browser?, tabId, method, params?, ordered?, timeoutMs?}
+POST /send          {browser?, tabId, method, params?, ordered?, timeoutMs?, sessionId?}
                                                  → { ok: true, result } | { ok: false, error:{message, code} }
 
 POST /events/subscribe {browser?, tabId, events} → { ok: true, result:{events, enabled, failed} }
@@ -208,6 +208,45 @@ browser-level target creation reachable from a per-tab attachment, and a tab
 opened by a page's `window.open` gets foregrounded, interrupting the user.
 
 `timeoutMs` on `/send` overrides `CMD_TIMEOUT_MS` for one command.
+
+## Sessions (out-of-process iframes)
+
+A tab-scoped attachment cannot see inside an out-of-process iframe. Verified, on
+a page at `127.0.0.1` framing `example.com` (different eTLD+1, so Chrome puts it
+in its own process):
+
+```
+DOM.getDocument {depth:-1, pierce:true} on the tab session
+  → sees the host page's elements
+  → does NOT see anything inside the iframe
+```
+
+The way in is a flat auto-attach, then addressing the resulting session:
+
+```jsonc
+POST /send {"tabId":N, "method":"Target.setAutoAttach",
+            "params":{"autoAttach":true,"flatten":true,"waitForDebuggerOnStart":false}}
+
+// subscribe to "Target.*" and read the event:
+{ "method":"Target.attachedToTarget",
+  "params":{ "sessionId":"14ECF1C2BE72…", "targetInfo":{"type":"iframe","url":"https://example.com/"} } }
+
+POST /send {"tabId":N, "method":"DOM.getDocument", "sessionId":"14ECF1C2BE72…"}
+  → the iframe's own document, and only that
+```
+
+`chrome.debugger.sendCommand` takes a `DebuggerSession` (Chrome 125+), so the
+`sessionId` is genuinely honoured, not ignored — a bogus one answers
+`-32001 Session with given id not found.`
+
+Events originating from such a session carry `sessionId` alongside `tabId`.
+
+**Lane granularity is still the tab.** An OOPIF's session shares the tab's focus,
+dialogs, and navigation, so ordering has to be decided at tab granularity — a
+session is an address, not a concurrency domain.
+
+Note `sessionId` changes across detach/reattach; `targetInfo.targetId` does not.
+Anything that needs to survive a reattach should key on the target.
 
 `/events` is an **incremental pull**: pass the previous read's `nextSeq` as
 `since` to get only what is new; `since=0` (or omitted) returns everything still

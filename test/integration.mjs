@@ -209,7 +209,7 @@ try {
   chk("status reports inflight count", typeof (await jget("/status")).body.browsers[0].inflight, "number");
   // The daemon↔ext message id is internal plumbing and must not reach a caller.
   chk("send response carries no wire id", "id" in (await sendA(1001, "Runtime.evaluate", {})).body, false);
-  chk("status version", (await jget("/status")).body.version, 4);
+  chk("status version", (await jget("/status")).body.version, 5);
 
   // CLI layer
   chkc("CLI eval A", cli("eval", "1001", "x", "--browser", "shopee-A"), "shopee-A (mock)");

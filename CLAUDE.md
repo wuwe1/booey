@@ -165,6 +165,11 @@ the `/events` cursor without reattaching.
   `4000` and the extension stops reconnecting permanently.
 - **One debugger per tab.** If the user opens DevTools on an attached tab, Chrome
   detaches us (`onDetach`).
+- **A tab attachment does not reach into out-of-process iframes.** Anything
+  cross-site (payments, embedded logins, ad slots) needs
+  `Target.setAutoAttach{flatten:true}` and a `sessionId` on the command. Key
+  long-lived state on `targetId`, not `sessionId` — the latter changes on
+  reattach.
 - **`Runtime.evaluate` via `chrome.debugger` bypasses page CSP** — that is the
   whole reason for this design. Do not switch to `executeScript` injection (subject
   to page CSP).
@@ -211,6 +216,9 @@ Do **not** add a `Co-Authored-By` trailer. Push only when the user asks.
   cursor with a `truncated` flag, `Runtime` off by default. Also (not protocol,
   same release): `/open-tab`, `/tabs?fresh=0`, per-command `timeoutMs`,
   structured error codes, and `clients/ts`.
+- **v5** `cdp` commands and events carry an optional `sessionId`, so a flat
+  auto-attached out-of-process iframe can be addressed. Verified end to end on a
+  real OOPIF — see SPEC's "Sessions" section.
 
 v3 and v4 were motivated by an audit against `browserbase/stagehand` and
 `browser-use` (see `~/Developer/browser_agent/docs/cdp-relay-design.md`,

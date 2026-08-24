@@ -2,7 +2,7 @@
 
 import { httpError } from "./http-error.mjs";
 
-export const PROTOCOL_VERSION = 4; // bumped from 3: attach carries an event subscription (see SPEC.md)
+export const PROTOCOL_VERSION = 5; // bumped from 4: cdp commands may carry a sessionId (see SPEC.md)
 export const DEFAULT_PORT = 9224; // 9223 is used by the legacy v1 relay in listo; keep them separate
 
 /**

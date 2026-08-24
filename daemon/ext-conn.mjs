@@ -245,13 +245,20 @@ export class ExtConn {
    * @param {number} tabId
    * @param {string} method
    * @param {any} [params]
-   * @param {boolean} [ordered] override the UNORDERED_CDP_METHODS classification
-   * @param {number} [timeoutMs] override the daemon-wide command timeout
+   * @param {{ordered?:boolean, timeoutMs?:number, sessionId?:string}} [opts]
+   *   ordered   — override the UNORDERED_CDP_METHODS classification
+   *   timeoutMs — override the daemon-wide command timeout
+   *   sessionId — address a flat auto-attached session (an OOPIF or worker)
+   *               instead of the tab's own session
    */
-  async sendCdp(tabId, method, params, ordered, timeoutMs) {
+  async sendCdp(tabId, method, params, opts = {}) {
     if (!this.attachedTabs.has(tabId)) throw httpError(409, `tab ${tabId} not attached`, { code: "TAB_NOT_ATTACHED" });
-    const exclusive = ordered ?? !UNORDERED_CDP_METHODS.has(method);
-    return this.callExt({ type: "cdp", tabId, method, params: params ?? {} }, exclusive, timeoutMs);
+    const exclusive = opts.ordered ?? !UNORDERED_CDP_METHODS.has(method);
+    const msg = { type: "cdp", tabId, method, params: params ?? {} };
+    if (opts.sessionId) msg.sessionId = opts.sessionId;
+    // Lane is still the tab: an OOPIF's session shares the tab's focus, dialogs,
+    // and navigation, so ordering has to be decided at tab granularity.
+    return this.callExt(msg, exclusive, opts.timeoutMs);
   }
 
   /**
@@ -319,7 +326,9 @@ export class ExtConn {
         return;
       case "event":
         if (typeof m.tabId === "number") {
-          this.cacheEvent(m.tabId, { method: m.method, params: m.params, ts: Date.now() });
+          const ev = { method: m.method, params: m.params, ts: Date.now() };
+          if (m.sessionId) ev.sessionId = m.sessionId; // came from an OOPIF/worker session
+          this.cacheEvent(m.tabId, ev);
         }
         return;
       case "detached":

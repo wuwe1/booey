@@ -143,7 +143,8 @@ async function handleHttp(req, res) {
       // a caller that knows its command should be quick shouldn't have to wait
       // out a 30s budget to find out the page is wedged.
       const timeoutMs = typeof body.timeoutMs === "number" ? body.timeoutMs : undefined;
-      return sendJson(res, 200, await conn.sendCdp(num(body.tabId), cdpMethod, body.params, ordered, timeoutMs));
+      const sessionId = typeof body.sessionId === "string" ? body.sessionId : undefined;
+      return sendJson(res, 200, await conn.sendCdp(num(body.tabId), cdpMethod, body.params, { ordered, timeoutMs, sessionId }));
     }
     if (path === "/events/clear") {
       const conn = registry.resolve(body.browser);

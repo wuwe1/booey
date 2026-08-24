@@ -16,7 +16,7 @@
 // the /events cursor without reattaching.
 import WebSocket from "ws";
 
-const PROTOCOL_VERSION = 4;
+const PROTOCOL_VERSION = 5;
 const PORT = Number(process.argv[2] || 9229);
 const ID = process.argv[3] || `mock-${process.pid}`;
 const LABEL = process.argv[4] || "";

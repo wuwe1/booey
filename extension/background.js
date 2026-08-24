@@ -15,7 +15,7 @@
 // daemon address multiple browsers. Do NOT bake an id into the build — the
 // extension build id is identical across browsers and can't tell them apart.
 
-const PROTOCOL_VERSION = 4;
+const PROTOCOL_VERSION = 5;
 const DEFAULT_PORT = 9224; // must match daemon/config.mjs; 9223 is the legacy v1 relay
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 15_000;
@@ -333,7 +333,7 @@ async function runCommand(m) {
       await detach(m.tabId);
       return {};
     case "cdp":
-      return await sendCdp(m.tabId, m.method, m.params || {});
+      return await sendCdp(m.tabId, m.method, m.params || {}, m.sessionId);
     default:
       throw new Error("unknown command type: " + m.type);
   }
@@ -371,9 +371,15 @@ function detach(tabId) {
   });
 }
 
-function sendCdp(tabId, method, params) {
+// The first argument is a DebuggerSession, not just a Debuggee: since Chrome 125
+// it takes an optional `sessionId` alongside the tabId. That is what lets us
+// reach out-of-process iframes — after Target.setAutoAttach{flatten:true}, each
+// OOPIF gets its own session, and a command addressed to the tab alone never
+// reaches inside it.
+function sendCdp(tabId, method, params, sessionId) {
   return new Promise((resolve, reject) => {
-    chrome.debugger.sendCommand({ tabId }, method, params || {}, (result) => {
+    const target = sessionId ? { tabId, sessionId } : { tabId };
+    chrome.debugger.sendCommand(target, method, params || {}, (result) => {
       if (chrome.runtime.lastError) return reject(chrome.runtime.lastError.message);
       resolve(result);
     });
@@ -384,6 +390,9 @@ function sendCdp(tabId, method, params) {
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
   const tabId = source.tabId;
+  // Present when the event came from a flat auto-attached session (an OOPIF or
+  // worker) rather than from the tab's own session.
+  const sessionId = source.sessionId;
   const entry = subs.get(tabId);
   // Nothing subscribed to this: drop it here, before stringify, send, or store.
   // A domain stays enabled only while something wants it, but Chrome can still
@@ -394,7 +403,9 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     return;
   }
   matchedEvents++;
-  if (entry.daemon.length > 0) pushEventToDaemon({ type: "event", tabId, method, params });
+  if (entry.daemon.length > 0) {
+    pushEventToDaemon({ type: "event", tabId, method, params, ...(sessionId ? { sessionId } : {}) });
+  }
   if (entry.popup.length === 0) return;
 
   if (method === "Network.requestWillBeSent") {

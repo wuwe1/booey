@@ -206,7 +206,7 @@ export class RelayClient {
     tabId: number,
     method: string,
     params?: Record<string, unknown>,
-    opts: { ordered?: boolean; timeoutMs?: number } = {},
+    opts: { ordered?: boolean; timeoutMs?: number; sessionId?: string } = {},
   ): Promise<T> {
     const r = await this.req<
       { ok: true; result: T } | { ok: false; error: { message: string; code?: RelayErrorCode } }
@@ -216,6 +216,7 @@ export class RelayClient {
       params: params ?? {},
       ...(opts.ordered === undefined ? {} : { ordered: opts.ordered }),
       ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
+      ...(opts.sessionId === undefined ? {} : { sessionId: opts.sessionId }),
     });
     if (!r.ok) throw new RelayError(`${method}: ${r.error.message}`, r.error.code ?? "DEBUGGER_ERROR", false);
     return r.result;
@@ -414,12 +415,15 @@ export class RelayClient {
    * @param opts.ordered take the tab exclusively (default: decided by method —
    *   pure reads overlap, everything else serializes)
    * @param opts.timeoutMs override the daemon's command budget for this one call
+   * @param opts.sessionId address a flat auto-attached session (an out-of-process
+   *   iframe or a worker) instead of the tab's own session. Get one from a
+   *   Target.attachedToTarget event after Target.setAutoAttach({flatten:true}).
    */
   async send<T = unknown>(
     tabId: number,
     method: string,
     params?: Record<string, unknown>,
-    opts: { ordered?: boolean; timeoutMs?: number } = {},
+    opts: { ordered?: boolean; timeoutMs?: number; sessionId?: string } = {},
   ): Promise<T> {
     return await this.cdp<T>(tabId, method, params, opts);
   }
