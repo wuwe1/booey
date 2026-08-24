@@ -1,13 +1,23 @@
 // page-model — L2 数据管线的前半段：把 ext 逐 frame 取回的三棵 CDP 树
 // （DOM + Accessibility + DOMSnapshot）合并成扁平的 NodeRecord 数组。
 //
-// 纯函数、无 I/O，可直接单测。这是设计文档 §5.2 的产物；elementHash（D）、
-// 剪枝 + serializer + selectorMap（E）都建在这上面。
+// 纯函数、无 I/O，可直接单测。这是设计文档 §5.2 + §5.3c 的产物：合并产出
+// NodeRecord，并给每个元素算 elementHash / parentBranchHash（D）——剪枝、
+// serializer、selectorMap（E）都建在这上面。
 //
 // 合并键是 backendNodeId（browser-use / stagehand 都用它）：DOM 树是骨架，
 // AX 节点按 backendDOMNodeId 挂 role/name，snapshot 按 backendNodeId 挂几何。
 // XPath 抄 stagehand 的兄弟序号算法（tag[i]，无属性谓词）——每个元素都带
 // [i]，包括根，所以是 "/html[1]/body[1]/div[2]/button[1]" 这种形状。
+//
+// elementHash 直接照搬 browser-use 的 compute_stable_hash（views.py:830）：
+//   sha256(`${rootTag/.../selfTag}|${排序后 k=v 拼接}${|ax_name=...}`)
+// 其中 class 先过 filter_dynamic_classes（去掉 20 个动态状态关键词），这样
+// 页面加个 `hover`/`focus`/`loading` 类不会改变身份。取 sha256 前 16 个 hex
+// 字符（browser-use 转成 int 是因为 Python __hash__ 必须 int；我们拿它当
+// Map key / 缓存锚点，string 更精确，避免 JS number 超过 2^53 丢精度）。
+
+import { createHash } from "node:crypto";
 
 export interface DomNode {
   nodeId?: number;
@@ -53,6 +63,10 @@ export interface NodeRecord {
   vis: boolean;
   int: boolean;
   xp: string;
+  /** 稳定身份：跨快照/跨会话认出「同一个元素」。sha256 前 16 hex。 */
+  elementHash: string;
+  /** 只基于父分支路径（rootTag/.../selfTag）的哈希，用于结构指纹。 */
+  parentBranchHash: string;
 }
 
 export interface Snapshot {
@@ -63,54 +77,91 @@ export interface Snapshot {
 }
 
 const NODE_TYPE_ELEMENT = 1;
-const NODE_TYPE_DOCUMENT = 9;
 
 /**
- * 白名单属性：只有这些进 NodeRecord.attrs。抄 browser-use 的 STATIC_ATTRIBUTES
- * 思路——够 LLM 认元素，又不把整段 style/事件处理器拖进来。
+ * 白名单属性：只有这些进 NodeRecord.attrs，也是 elementHash 的输入。直接抄
+ * browser-use 的 STATIC_ATTRIBUTES（views.py:84）——注意它刻意不含 `value`
+ * （输入值每次都在变，进了哈希就失去稳定性）。
  */
-const ATTR_WHITELIST = new Set([
-  "id",
+const STATIC_ATTRIBUTES = new Set([
   "class",
+  "id",
   "name",
   "type",
-  "href",
-  "src",
   "placeholder",
-  "value",
-  "role",
-  "title",
-  "alt",
-  "for",
-  "action",
-  "method",
-  "rel",
-  "target",
-  "download",
-  "checked",
-  "selected",
-  "disabled",
-  "readonly",
-  "multiple",
-  "maxlength",
-  "min",
-  "max",
-  "step",
-  "pattern",
-  "autocomplete",
-  "contenteditable",
   "aria-label",
-  "aria-checked",
-  "aria-expanded",
-  "aria-selected",
-  "aria-disabled",
-  "aria-hidden",
+  "title",
+  "role",
   "data-testid",
   "data-test",
-  "data-id",
   "data-cy",
-  "data-e2e",
+  "data-selenium",
+  "for",
+  "required",
+  "disabled",
+  "readonly",
+  "checked",
+  "selected",
+  "multiple",
+  "accept",
+  "href",
+  "target",
+  "rel",
+  "aria-describedby",
+  "aria-labelledby",
+  "aria-controls",
+  "aria-owns",
+  "aria-live",
+  "aria-atomic",
+  "aria-busy",
+  "aria-disabled",
+  "aria-hidden",
+  "aria-pressed",
+  "aria-autocomplete",
+  "aria-checked",
+  "aria-selected",
+  "list",
+  "tabindex",
+  "alt",
+  "src",
+  "lang",
+  "itemscope",
+  "itemtype",
+  "itemprop",
+  "pseudo",
+  "aria-valuemin",
+  "aria-valuemax",
+  "aria-valuenow",
+  "aria-placeholder",
 ]);
+
+/**
+ * class 里的这些子串表示动态/瞬态 UI 状态，进哈希会让身份随交互抖动。
+ * 抄 browser-use 的 DYNAMIC_CLASS_PATTERNS（views.py:139）——substring 匹配，
+ * 不是整词。
+ */
+const DYNAMIC_CLASS_PATTERNS = [
+  "focus",
+  "hover",
+  "active",
+  "selected",
+  "disabled",
+  "animation",
+  "transition",
+  "loading",
+  "open",
+  "closed",
+  "expanded",
+  "collapsed",
+  "visible",
+  "hidden",
+  "pressed",
+  "checked",
+  "highlighted",
+  "current",
+  "entering",
+  "leaving",
+];
 
 /** 可交互的 AX role：有这些 role 的可见节点才标 `int`。 */
 const INTERACTIVE_ROLES = new Set([
@@ -139,13 +190,59 @@ const INTERACTIVE_ROLES = new Set([
   "rowheader",
 ]);
 
+/** sha256 → 前 16 个 hex 字符（64 bit）。browser-use 用同样的截断，只是转 int。 */
+function hash64(s: string): string {
+  return createHash("sha256").update(s, "utf8").digest("hex").slice(0, 16);
+}
+
+/** 去掉动态状态 class，保留语义/识别性的，并排序（哈希要确定性）。 */
+function filterDynamicClasses(classStr: string): string {
+  if (!classStr) return "";
+  const classes = classStr.split(/\s+/).filter(Boolean);
+  const stable = classes.filter(
+    (c) => !DYNAMIC_CLASS_PATTERNS.some((pattern) => c.toLowerCase().includes(pattern)),
+  );
+  return stable.sort().join(" ");
+}
+
+/**
+ * 元素稳定哈希 = sha256(parentBranchPath|attributes|ax_name) 前 16 hex。
+ * `branchPath` 是从根到自身的 tag 列表（含自身，browser-use 的
+ * `_get_parent_branch_path` 也是这样）。
+ */
+function computeElementHash(
+  branchPath: string[],
+  attrs: Record<string, string>,
+  axName: string,
+): string {
+  const entries: Array<[string, string]> = [];
+  for (const [k, v] of Object.entries(attrs)) {
+    if (!STATIC_ATTRIBUTES.has(k)) continue;
+    let val = v;
+    if (k === "class") {
+      val = filterDynamicClasses(v);
+      if (!val) continue; // 过滤后空 class 不参与
+    }
+    entries.push([k, val]);
+  }
+  entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const attrsString = entries.map(([k, v]) => `${k}=${v}`).join("");
+  const axPart = axName ? `|ax_name=${axName}` : "";
+  return hash64(`${branchPath.join("/")}|${attrsString}${axPart}`);
+}
+
+/** 父分支哈希：只看结构路径，不看属性/名字。 */
+function computeParentBranchHash(branchPath: string[]): string {
+  return hash64(branchPath.join("/"));
+}
+
 /** DOM 的 attributes 数组是 [k1, v1, k2, v2, …]，只保留白名单里的键。 */
 function parseAttrs(attributes?: string[]): Record<string, string> {
   const out: Record<string, string> = {};
   if (!attributes) return out;
   for (let i = 0; i + 1 < attributes.length; i += 2) {
     const key = attributes[i]!;
-    if (ATTR_WHITELIST.has(key)) out[key] = attributes[i + 1] ?? "";
+    if (STATIC_ATTRIBUTES.has(key)) out[key] = attributes[i + 1] ?? "";
   }
   return out;
 }
@@ -181,8 +278,9 @@ function indexRects(snapshot: any): Map<number, [number, number, number, number]
 }
 
 /**
- * DFS 遍历 DOM 树，产出 NodeRecord。每个元素带兄弟序号 XPath（stagehand 算法）。
- * 非元素节点（document / text / comment）不产 record，但其后代继续走。
+ * DFS 遍历 DOM 树，产出 NodeRecord。每个元素带兄弟序号 XPath（stagehand 算法）
+ * 和 elementHash / parentBranchHash。非元素节点（document / text / comment）
+ * 不产 record，但其后代继续走。
  */
 function walkDom(
   node: DomNode,
@@ -192,11 +290,22 @@ function walkDom(
   counters: Record<string, number>,
   axIndex: Map<number, AxNode>,
   rectIndex: Map<number, [number, number, number, number]>,
+  branchPath: string[],
   out: NodeRecord[],
 ): void {
   if (node.nodeType !== NODE_TYPE_ELEMENT) {
     for (const child of node.children ?? []) {
-      walkDom(child, frameOrdinal, parentId, parentXp, counters, axIndex, rectIndex, out);
+      walkDom(
+        child,
+        frameOrdinal,
+        parentId,
+        parentXp,
+        counters,
+        axIndex,
+        rectIndex,
+        branchPath,
+        out,
+      );
     }
     return;
   }
@@ -204,6 +313,7 @@ function walkDom(
   const tag = (node.localName || node.nodeName || "").toLowerCase();
   counters[tag] = (counters[tag] ?? 0) + 1;
   const xp = `${parentXp}/${tag}[${counters[tag]}]`;
+  const myBranch = [...branchPath, tag];
 
   const backend = node.backendNodeId;
   const ax = axIndex.get(backend);
@@ -213,6 +323,7 @@ function walkDom(
   // 可见性：有几何（snapshot 给了 box）就一定可见；否则退回 AX 的非 ignored。
   const vis = rect != null || (ax != null && ax.ignored === false);
   const int = vis && INTERACTIVE_ROLES.has(role);
+  const attrs = parseAttrs(node.attributes);
 
   out.push({
     id: `${frameOrdinal}-${backend}`,
@@ -220,11 +331,13 @@ function walkDom(
     tag,
     role,
     name,
-    attrs: parseAttrs(node.attributes),
+    attrs,
     rect,
     vis,
     int,
     xp,
+    elementHash: computeElementHash(myBranch, attrs, name),
+    parentBranchHash: computeParentBranchHash(myBranch),
   });
 
   const childCounters: Record<string, number> = {};
@@ -237,6 +350,7 @@ function walkDom(
       childCounters,
       axIndex,
       rectIndex,
+      myBranch,
       out,
     );
   }
@@ -250,7 +364,7 @@ export function mergeFrame(frame: FrameTrees): NodeRecord[] {
   const root = frame.dom;
   const rootCounters: Record<string, number> = {};
   for (const child of root.children ?? []) {
-    walkDom(child, frame.frameOrdinal, null, "", rootCounters, axIndex, rectIndex, out);
+    walkDom(child, frame.frameOrdinal, null, "", rootCounters, axIndex, rectIndex, [], out);
   }
   return out;
 }

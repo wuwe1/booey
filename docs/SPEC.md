@@ -387,9 +387,20 @@ by `backendNodeId` — and emits a flat `NodeRecord[]`:
   "rect": [120, 480, 96, 36],  // [x,y,w,h] from DOMSnapshot, null without geometry
   "vis": true,                 // has geometry, or AX non-ignored
   "int": true,                 // visible and an interactive role
-  "xp": "/html[1]/body[1]/button[1]"   // sibling-index XPath (stagehand algorithm)
+  "xp": "/html[1]/body[1]/button[1]",  // sibling-index XPath (stagehand algorithm)
+  "elementHash": "9f3a…",      // sha256(tagPath|sortedAttrs|ax_name) first 16 hex
+  "parentBranchHash": "7c2b…"  // sha256(tagPath) first 16 hex
 }
 ```
+
+`elementHash` is the stable identity (design doc §5.3c): it is
+`sha256(parentBranchPath|attributes|ax_name)` truncated to the first 16 hex
+characters, with the `class` attribute filtered through the 20 dynamic-state
+substrings first (`hover`/`focus`/`loading`/…), so page state churn doesn't
+change identity. `parentBranchHash` is the same over just the tag path, for
+structure fingerprints. Both follow browser-use's `compute_stable_hash` /
+`parent_branch_hash`; the values stay strings (browser-use converts to int only
+because Python `__hash__` must return one).
 
 A `Snapshot` is a picture of the page at one `revision`. `POST /snapshot` stores
 it keyed to the revision at capture time; `GET /snapshot` returns the cached one

@@ -168,3 +168,65 @@ test("buildSnapshot 汇总 frame 并携带 revision/url", () => {
   assert.equal(snap.frames.length, 1);
   assert.equal(snap.nodes.length, 6); // html/body/button/div/a/a
 });
+
+/** 一个「html>body>button」的最小树，button 的 class 可指定。 */
+function buttonTree(classVal: string): DomNode {
+  return {
+    nodeType: 9,
+    nodeName: "#document",
+    backendNodeId: 1,
+    children: [
+      {
+        nodeType: 1,
+        nodeName: "html",
+        localName: "html",
+        backendNodeId: 2,
+        children: [
+          {
+            nodeType: 1,
+            nodeName: "body",
+            localName: "body",
+            backendNodeId: 3,
+            children: [
+              {
+                nodeType: 1,
+                nodeName: "button",
+                localName: "button",
+                backendNodeId: 4,
+                attributes: ["id", "add-cart", "class", classVal],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+test("elementHash / parentBranchHash 是 16 hex 字符串", () => {
+  const btn = mergeFrame(frame()).find((n) => n.id === "0-4")!;
+  assert.match(btn.elementHash, /^[0-9a-f]{16}$/);
+  assert.match(btn.parentBranchHash, /^[0-9a-f]{16}$/);
+});
+
+test("动态 class 不改变 elementHash（hover/focus/loading 被过滤）", () => {
+  const a = mergeFrame({ ...frame(), dom: buttonTree("btn primary") }).find(
+    (n) => n.tag === "button",
+  )!;
+  const b = mergeFrame({ ...frame(), dom: buttonTree("btn primary hover focus loading") }).find(
+    (n) => n.tag === "button",
+  )!;
+  assert.equal(a.elementHash, b.elementHash);
+  // 但 attrs.class 展示的是原始 class，动态类还在。
+  assert.equal(b.attrs.class, "btn primary hover focus loading");
+});
+
+test("parentBranchHash 只看结构路径，不看属性/名字", () => {
+  const a = mergeFrame({ ...frame(), dom: buttonTree("btn primary") }).find(
+    (n) => n.tag === "button",
+  )!;
+  const b = mergeFrame({ ...frame(), dom: buttonTree("btn alt") }).find((n) => n.tag === "button")!;
+  assert.equal(a.parentBranchHash, b.parentBranchHash);
+  // 属性不同 → elementHash 不同。
+  assert.notEqual(a.elementHash, b.elementHash);
+});

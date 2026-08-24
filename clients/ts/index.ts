@@ -174,6 +174,10 @@ export interface NodeRecord {
   int: boolean;
   /** frame 内相对 XPath（兄弟序号，如 /html[1]/body[1]/button[1]）。 */
   xp: string;
+  /** 稳定身份：跨快照/跨会话认出「同一个元素」。sha256 前 16 hex。 */
+  elementHash: string;
+  /** 只基于父分支路径（rootTag/.../selfTag）的哈希，用于结构指纹。 */
+  parentBranchHash: string;
 }
 
 export interface Snapshot {
