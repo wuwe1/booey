@@ -213,7 +213,8 @@ Do **not** add a `Co-Authored-By` trailer. Push only when the user asks.
   structured error codes, and `clients/ts`.
 
 v3 and v4 were motivated by an audit against `browserbase/stagehand` and
-`browser-use` (see `~/Developer/browser_agent/docs/hitch-design.md`).
+`browser-use` (see `~/Developer/browser_agent/docs/cdp-relay-design.md`,
+which also carries the measured numbers behind these choices).
 
 ## Provenance
 

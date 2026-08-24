@@ -293,7 +293,11 @@ export class ExtConn {
       if (m.ok === false && m.error && typeof m.error === "object" && !m.error.code) {
         m.error.code = "DEBUGGER_ERROR";
       }
-      if (!this._settle(m.id, (w) => w.resolve(m))) {
+      // The wire id is how the daemon pairs the response; it means nothing to an
+      // HTTP caller. Strip it here rather than leaking internal plumbing into
+      // the public contract.
+      const { id: _wireId, ...payload } = m;
+      if (!this._settle(m.id, (w) => w.resolve(payload))) {
         this._log(`[${this.name}] response for retired id ${m.id} — dropping`);
       }
       return;

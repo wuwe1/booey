@@ -207,6 +207,8 @@ try {
   await jpost("/attach", { browser: "shopee-A", tabId: 1001 });
 
   chk("status reports inflight count", typeof (await jget("/status")).body.browsers[0].inflight, "number");
+  // The daemon↔ext message id is internal plumbing and must not reach a caller.
+  chk("send response carries no wire id", "id" in (await sendA(1001, "Runtime.evaluate", {})).body, false);
   chk("status version", (await jget("/status")).body.version, 4);
 
   // CLI layer
