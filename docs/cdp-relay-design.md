@@ -327,20 +327,32 @@ stagehand 是两级：重放 xpath → 失败就整个重新推理。我们中�
  */
 ```
 
-### 6.3 缓存
+### 6.3 缓存 —— 留给调用方
 
-**本地 KV，不依赖任何云**（stagehand 这块绑 Browserbase，是它在自托管场景最大的短板）：
+> **2026-08-24 修订：缓存不放进 daemon，留给调用方自己做。** 做完 F 之后边界更清楚了。
 
-```
-key   = sha256(归一化URL + instruction + 结构指纹)
-value = Action[]
-```
+`key = sha256(归一化URL + instruction + 结构指纹) → value = Action[]` 这个映射的三块
+输入里，两块是调用方的业务知识：
 
-- 归一化 URL：去 query 里的易变参数、去 fragment
-- 结构指纹：快照里所有 `elementHash` 的有序摘要——页面改版则指纹变，自动 miss
-- 存储：daemon 侧 SQLite，按 (origin, instruction) 建索引
+- **instruction**（「加购」「改地址」）是自然语言任务，daemon 只认识「一批动作」；
+- **归一化 URL** 里「哪些 query 参数易变」（session token、时间戳）是站点相关的；
+- 只有**结构指纹**（快照里 `elementHash` 的有序摘要）是 daemon 侧的，而调用方 act 之后也拿得到。
 
-对「能写成流程图」的任务，这意味着**首次跑用 LLM，之后全部零 token 毫秒级**。
+再加上 self-heal 的完整闭环需要 LLM，而 LLM 是调用方的（§11）。所以缓存放哪边都不会让
+self-heal 更自治——daemon 重放全失效时照样得回头问调用方重新推理。
+
+**daemon 的职责是「可无状态重放」，不是「缓存」**（§6.1：`Action` 可序列化、可存盘、可重放）：
+
+| 谁 | 该做什么 |
+|---|---|
+| **daemon** | `Action[]` 重放 + 三级回退（xpath 失效 → elementHash 零 LLM 自愈 → `needsInference`）✅ |
+| **调用方** | 存 `key → Action[]`，命中调 `/act` 重放，`needsInference` 时重新推理并写回（几行代码） |
+
+对 lilto：主线站点走 `contracts/` 逆向出来的平台 API，比「快照→LLM→点击」快几个数量级；
+缓存是**兜底**——没逆向过的新站点先跑通，跑通后这条指令由调用方缓存，之后重放接近零成本。
+
+对「能写成流程图」的任务，效果不变：**首次跑用 LLM，之后重放零 token 毫秒级**——只是那个
+KV 存在调用方手里，daemon 只管把动作原语做到无状态、可重放。
 
 ### 6.4 批量执行的两层守卫
 
@@ -469,7 +481,7 @@ browser-use 的 `SessionManager` 是这块的参考实现（单一真源，靠 `
 | C | 取三棵树 + 跨 frame 合并 → NodeRecord | B |
 | D | `elementHash` / `parentBranchHash` | C |
 | E | 剪枝 + serializer（DOM-first）+ selectorMap | C |
-| F | L3：动作层 + 缓存 + 三级回退 + 两层半守卫 | A + D + E |
+| F | L3：动作层 + 三级回退 + 两层半守卫（缓存留给调用方，见 §6.3） | A + D + E |
 | G | 标准 CDP 门面 | B |
 
 **A 是唯一真·零依赖的**，而且它同时是两个下游的地基（第三层守卫、快照失效）。先做它。

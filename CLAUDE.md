@@ -154,6 +154,9 @@ the `/events` cursor without reattaching.
 - **Keep `docs/SPEC.md` in sync** with any change to the WS messages, HTTP
   endpoints, error codes, or addressing. It is the contract other code is written
   against; drift is a real bug.
+- **LLM 推理与动作缓存是调用方的**（设计文档 §6.3 / §11）。daemon 提供快照、`/act`
+  重放 + 三级回退，不内置 LLM、不内置 `key → Action[]` 缓存 KV——lilto 等调用方自己
+  存、命中就重放、`needsInference` 时重新推理并写回。别把这两层拖回 daemon。
 - Match the style of surrounding code (small functions, early returns, the existing
   comment density).
 
