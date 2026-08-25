@@ -1,13 +1,16 @@
-// One number lives in five places. This asserts they agree, because every way
-// they can disagree is a silent failure at a different layer:
+// Two numbers, five files. This asserts they agree, because every way they can
+// disagree is a silent failure at a different layer:
 //
 //   PROTOCOL_VERSION mismatch  → the daemon closes the socket with 4000 and the
 //                                extension stops reconnecting *permanently*
 //   package/manifest mismatch  → a user cannot tell which extension build is
 //                                loaded in which browser
 //
-// The package major IS the protocol version: `@wuwe1/cdp-relay@6` means "talks
-// to a v6 extension". That is the whole versioning contract (README, CLAUDE.md).
+// The package version and the protocol version are INDEPENDENT (the package is
+// on normal semver; the protocol is a wire number that only moves when the wire
+// moves). `package.json#cdpRelay.protocolVersion` is the published statement of
+// which protocol a release speaks, and it must match the constants in the code —
+// otherwise the field is a lie a consumer would read and pin against.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -71,11 +74,13 @@ if (distinct.length > 1) {
   problems.push(`PROTOCOL_VERSION disagrees: ${JSON.stringify(sources)}`);
 }
 
-const pkgMajor = Number(pkg.version.split(".")[0]);
-if (distinct.length === 1 && distinct[0] !== pkgMajor) {
+const declared = pkg.cdpRelay?.protocolVersion;
+if (typeof declared !== "number") {
+  problems.push("package.json is missing cdpRelay.protocolVersion");
+} else if (distinct.length === 1 && distinct[0] !== declared) {
   problems.push(
-    `package major ${pkgMajor} !== PROTOCOL_VERSION ${distinct[0]} — ` +
-      `a protocol bump is a major bump (see docs/SPEC.md)`,
+    `package.json cdpRelay.protocolVersion ${declared} !== PROTOCOL_VERSION ${distinct[0]} — ` +
+      "a protocol bump has to be declared in the package too (see docs/SPEC.md)",
   );
 }
 
@@ -84,6 +89,6 @@ if (problems.length) {
   process.exit(1);
 }
 console.log(
-  `version:check OK — package ${pkg.version}, protocol v${distinct[0]}, ` +
+  `version:check OK — package ${pkg.version} (speaks protocol v${distinct[0]}), ` +
     `manifest ${manifest.version}, extension id ${EXTENSION_ID}`,
 );

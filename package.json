@@ -1,6 +1,6 @@
 {
   "name": "@wuwe1/cdp-relay",
-  "version": "6.0.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "Multi-browser CDP relay: drive any number of already-logged-in browsers from one local daemon via a chrome.debugger extension. See docs/SPEC.md.",
   "keywords": [
@@ -65,6 +65,9 @@
   },
   "dependencies": {
     "ws": "^8.18.0"
+  },
+  "cdpRelay": {
+    "protocolVersion": 6
   },
   "engines": {
     "node": ">=22.18"

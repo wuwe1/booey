@@ -43,17 +43,26 @@ address it by label or id.
 
 ## Install
 
-**The package major is the protocol version.** `@wuwe1/cdp-relay@6` speaks
-protocol v6 and only talks to a v6 extension; a mismatch closes the socket with
-code `4000` and the extension stops reconnecting. Pin the major, and reload the
-extension when you bump it.
-
 ```sh
 # from the repo (no registry account needed — the package builds on install)
-npm install github:wuwe1/cdp-relay#v6.0.0
+npm install github:wuwe1/cdp-relay#v1.0.0
 # or, once published
 npm install @wuwe1/cdp-relay
 ```
+
+**The daemon and the extension have to speak the same protocol version.** They
+ship in the same tarball, so the only way to get that wrong is to update the
+package and not reload the extension — and then the daemon closes the socket
+with code `4000` and the extension stops reconnecting *permanently*. Reload the
+extension when you bump the package, and run `cdp-relay doctor`, which exists to
+catch exactly this.
+
+The package version is ordinary semver and moves independently of the wire.
+Each release states its protocol in `package.json` → `cdpRelay.protocolVersion`:
+
+| package | protocol |
+|---|---|
+| 1.x | v6 |
 
 Then load the extension **in each browser** — it can't ride along with npm,
 because Chrome needs a human to point at a directory:
@@ -173,8 +182,9 @@ the extension loaded.
 
 ### Releasing
 
-1. Bump `version` in `package.json` **and** `extension/manifest.json` (major =
-   `PROTOCOL_VERSION`; `npm run version:check` enforces it).
+1. Bump `version` in `package.json` **and** `extension/manifest.json` (they must
+   match); if the wire changed, bump `cdpRelay.protocolVersion` with it.
+   `npm run version:check` enforces both.
 2. `npm run check`.
 3. Tag `v<version>` and push — CI builds the release and attaches the extension
    zip (`cdp-relay ext zip` locally does the same).

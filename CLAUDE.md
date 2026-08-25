@@ -125,10 +125,14 @@ Published as **`@wuwe1/cdp-relay`** from this repo (`github.com/wuwe1/cdp-relay`
 consumers can equally install the git tag directly (`prepare` builds on install),
 which is why the npm registry is optional here.
 
-- **The package major IS `PROTOCOL_VERSION`.** `@wuwe1/cdp-relay@6` speaks v6 and
-  only talks to a v6 extension. `scripts/check-versions.mjs` enforces
-  package.json ↔ `extension/manifest.json` ↔ the three `PROTOCOL_VERSION`
-  constants, and runs first in `npm run check`.
+- **Package version and protocol version are independent.** The package is on
+  ordinary semver (1.0.0 is the first release); `PROTOCOL_VERSION` is a wire
+  number that moves only when the wire moves. The published statement of which
+  protocol a release speaks is `package.json` → `cdpRelay.protocolVersion`, and
+  `scripts/check-versions.mjs` enforces it against the three in-code constants,
+  plus package.json ↔ `extension/manifest.json`. It runs first in `npm run check`.
+  Daemon and extension ship together, so the only realistic way to get a version
+  mismatch is a human not reloading the extension — hence `doctor`.
 - **Node will not type-strip under `node_modules`**
   (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`). That single fact is why
   `dist/` exists. `tsconfig.build.json` turns on `rewriteRelativeImportExtensions`
@@ -202,9 +206,10 @@ the `/events` cursor without reattaching.
 - **Protocol changes are a six-file edit:** bump `PROTOCOL_VERSION` in
   `daemon/config.ts`, `extension/background.js`, **and**
   `daemon/test-mock-ext.ts` (all must match, or the daemon closes with code
-  `4000`), bump the major in `package.json` **and** `extension/manifest.json`
-  (the package major is the protocol version), then update `docs/SPEC.md`.
-  `npm run version:check` catches five of the six. A daemon and extension on
+  `4000`), bump `cdpRelay.protocolVersion` in `package.json`, and bump the
+  package + `extension/manifest.json` versions together (semver, independent of
+  the wire number), then update `docs/SPEC.md`. `npm run version:check` catches
+  five of the six. A daemon and extension on
   mismatched versions will not talk.
 - **Keep `docs/SPEC.md` in sync** with any change to the WS messages, HTTP
   endpoints, error codes, or addressing. It is the contract other code is written
@@ -269,7 +274,7 @@ the `/events` cursor without reattaching.
 Sole developer; commit to `main` directly (no branch/PR). Commit subject `type: description`.
 Do **not** add a `Co-Authored-By` trailer. Push only when the user asks.
 
-Tags are releases: `v<version>`, major = `PROTOCOL_VERSION`. Tag only when the
+Tags are releases: `v<version>`, matching `package.json`. Tag only when the
 user asks — pushing a tag triggers `.github/workflows/release.yml`.
 
 ## Working with the user
@@ -321,7 +326,8 @@ user asks — pushing a tag triggers `.github/workflows/release.yml`.
   (xpath → elementHash re-locate → `needsInference`) and the batch guards
   (`terminatesSequence` + a page-`revision` re-check that keeps partial results).
   Not protocol, same release: the repo became a publishable package
-  (`@wuwe1/cdp-relay`, major = protocol version) — see Distribution.
+  (`@wuwe1/cdp-relay`, first release 1.0.0, declaring protocol v6 in
+  `cdpRelay.protocolVersion`) — see Distribution.
 
 v3 and v4 were motivated by an audit against `browserbase/stagehand` and
 `browser-use` (see `docs/cdp-relay-design.md`, which also carries the measured

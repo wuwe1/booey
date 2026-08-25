@@ -6,8 +6,9 @@
 - `browserbase/stagehand@a21633d`
 - `browser-use/browser-use@85ddbfe`
 
-代码：`~/Developer/cdp-relay` / [github.com/wuwe1/cdp-relay](https://github.com/wuwe1/cdp-relay)（协议 v6，
-发布为 `@wuwe1/cdp-relay@6`——包主版本号 = 协议号）。**契约见 `docs/SPEC.md`**：那边写「是什么」，
+代码：`~/Developer/cdp-relay` / [github.com/wuwe1/cdp-relay](https://github.com/wuwe1/cdp-relay)
+（协议 v6，发布为 `@wuwe1/cdp-relay`，首个版本 1.0.0——包版本走普通 semver，
+协议号单独声明在 `package.json` 的 `cdpRelay.protocolVersion`）。**契约见 `docs/SPEC.md`**：那边写「是什么」，
 这边写「为什么、量了多少、下一步」。两边讲同一个东西时，SPEC 是准的。
 
 > **本文里的数字全是实测的**，2026-08-24 在真实 Chrome 上跑的（`learning.oreilly.com` +
@@ -50,7 +51,7 @@
 
 | 表面 | 给谁 | 状态 |
 |---|---|---|
-| **HTTP + `clients/ts`** | lilto 等直接消费者 | ✅ 见 `SPEC.md`；发布为 `@wuwe1/cdp-relay` |
+| **HTTP + `clients/ts`** | lilto 等直接消费者 | ✅ 见 `SPEC.md`；发布为 `@wuwe1/cdp-relay@1`（协议 v6） |
 | **CLI** | 人 / 脚本 | ✅ |
 | **标准 CDP endpoint** | Playwright / puppeteer / browser-use | ⏸ 暂缓（SDK + CLI 已覆盖当前消费者，见 §11） |
 
