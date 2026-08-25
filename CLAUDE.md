@@ -20,17 +20,26 @@ daemon, extension, or CLI. This file is orientation; SPEC.md is the source of tr
 
 ```sh
 npm install                                      # `ws` (runtime) + typescript/biome/@types/node (dev)
-npm test                                          # integration test (see Testing)
-npm run typecheck                                 # tsc --noEmit — strict, no emit step
+npm run check                                     # THE gate: version:check + typecheck + lint + unit + test + test:pack
+npm test                                          # integration + client + lilto compat (see Testing)
+npm run test:pack                                 # packs the tarball, installs it, drives it from node_modules
+npm run version:check                             # package/manifest/PROTOCOL_VERSION agree
+npm run typecheck                                 # tsc --noEmit — strict
 npm run lint / npm run format                     # biome (lint / format)
+npm run build                                     # dist/ — publish-time only, never needed to develop
 
 node daemon/server.ts [port]                     # run the daemon (default 9224)
 node daemon/test-mock-ext.ts <port> <id> <label> # a fake browser (protocol test double)
 node cli/cdp-relay.ts <command> [--browser <id|label>] [--port N]   # the CLI; `cli/cdp-relay help`
+node cli/cdp-relay.ts ext path                   # where to point "Load unpacked"
+node cli/cdp-relay.ts doctor                     # daemon/extension/protocol-version check
 ```
 
-There is **no build or emit step** — Node ≥22.18 runs `.ts` directly via type
-stripping. Validation = `npm run typecheck` + `npm run lint` + `npm test` green.
+**No build step in development** — Node ≥22.18 runs `.ts` directly via type
+stripping. A build exists only for publishing (see Distribution): Node refuses
+to strip types under `node_modules`, so the tarball must carry real `.js` +
+`.d.ts`. Nothing in the repo imports `dist/`; if you find yourself building to
+test something, that's a bug in what you're testing.
 
 ## Layout
 
@@ -48,10 +57,15 @@ daemon/
 extension/          MV3: background.js (identity + WS client + debugger bridge),
                     offscreen-heartbeat.{html,js}, popup.{html,js}, manifest.json
 cli/cdp-relay.ts    Node CLI over the HTTP API
+scripts/check-versions.mjs  the one number that lives in five files
 test/integration.mjs  protocol-level end-to-end harness
 test/client.mjs       drives clients/ts against the daemon
 test/compat-lilto.mjs drives lilto's OWN client (a frozen copy) — see below
+test/pack.mjs         packs + installs the tarball, drives it from node_modules
 docs/SPEC.md        protocol contract (authoritative)
+docs/cdp-relay-design.md  why it is shaped this way + measured numbers (see Docs)
+.github/workflows/  ci (checks on push) + release (tag → GH release + ext zip)
+dist/               build output, gitignored, publish only
 ```
 
 ## Architecture notes
@@ -105,6 +119,35 @@ side.** It runs its own `src/relay/client.ts`; pointing it here is a matter of
   genuinely *not* round-trip to the ext — the mock returns an extra tab only via
   a real `list-tabs`, which is what keeps that assertion honest.
 
+## Distribution
+
+Published as **`@wuwe1/cdp-relay`** from this repo (`github.com/wuwe1/cdp-relay`);
+consumers can equally install the git tag directly (`prepare` builds on install),
+which is why the npm registry is optional here.
+
+- **The package major IS `PROTOCOL_VERSION`.** `@wuwe1/cdp-relay@6` speaks v6 and
+  only talks to a v6 extension. `scripts/check-versions.mjs` enforces
+  package.json ↔ `extension/manifest.json` ↔ the three `PROTOCOL_VERSION`
+  constants, and runs first in `npm run check`.
+- **Node will not type-strip under `node_modules`**
+  (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`). That single fact is why
+  `dist/` exists. `tsconfig.build.json` turns on `rewriteRelativeImportExtensions`
+  so the source keeps its honest `./config.ts` specifiers and the emit gets
+  `./config.js`. **Never** "fix" this by rewriting imports to `.js`.
+- **`test/pack.mjs` is the only test that sees the published shape.** It packs,
+  extracts into a `node_modules`, and drives daemon + client + CLI from there.
+  A packaging mistake is invisible everywhere else in this repo and shows up in
+  the consumer, on install day.
+- **The extension cannot ship through npm to a browser** — Chrome needs a human
+  pointing "Load unpacked" at a directory. It rides in the tarball anyway, and
+  `cdp-relay ext path` prints where it landed; the tag's GH release carries a zip.
+- **`cdp-relay doctor`** exists for the characteristic failure of this
+  arrangement: daemon updated, extension not reloaded ⇒ close `4000` ⇒ the
+  extension gives up permanently and the symptom is "nothing happens".
+- Release = bump both versions → `npm run check` → tag `v<version>` → push.
+  `.github/workflows/release.yml` builds the GH release; npm publish is gated on
+  the repo variable `NPM_PUBLISH`.
+
 ## Testing
 
 `npm test` (`test/integration.mjs`) spawns the real daemon + two mock-ext
@@ -114,7 +157,8 @@ three concurrency levels, response pairing across a give-up, detach-cancels-
 inflight, event subscription/filtering, the `/events` cursor, the CLI round-trip,
 and same-id reconnect. `npm test` runs three suites in order — expect
 `PASS=55` (protocol), `PASS=71` (client), `PASS=16` (lilto compat), all
-`FAIL=0`, exit 0.
+`FAIL=0`, exit 0. `npm run test:pack` is separate (`PASS=13`) because it builds
+a tarball — see Distribution.
 
 The daemon under test runs with `CDP_RELAY_CMD_TIMEOUT_MS=500` (give-up path)
 and `CDP_RELAY_EVENT_CACHE_CAP=4` (ring truncation) so both are reachable
@@ -146,14 +190,24 @@ the `/events` cursor without reattaching.
   erasable syntax: no `enum`/`namespace`/decorators/parameter-properties, and
   import with real `.ts` extensions. JSDoc stays where it helps editors. Keep
   runtime deps near-zero (`ws` only); typecheck/lint tooling is dev-only.
-- **Protocol changes are a four-file edit:** bump `PROTOCOL_VERSION` in
+- **Protocol changes are a six-file edit:** bump `PROTOCOL_VERSION` in
   `daemon/config.ts`, `extension/background.js`, **and**
   `daemon/test-mock-ext.ts` (all must match, or the daemon closes with code
-  `4000`), then update `docs/SPEC.md`. A daemon and extension on mismatched
-  versions will not talk.
+  `4000`), bump the major in `package.json` **and** `extension/manifest.json`
+  (the package major is the protocol version), then update `docs/SPEC.md`.
+  `npm run version:check` catches five of the six. A daemon and extension on
+  mismatched versions will not talk.
 - **Keep `docs/SPEC.md` in sync** with any change to the WS messages, HTTP
   endpoints, error codes, or addressing. It is the contract other code is written
   against; drift is a real bug.
+- **Two docs, two jobs — don't merge them and don't duplicate across them.**
+  `docs/SPEC.md` is normative and present-tense: what the wire, the endpoints,
+  and the error codes *are*, in English. `docs/cdp-relay-design.md` is the
+  reasoning: why this shape, what was measured (with numbers), what was rejected,
+  what is deliberately not built, in Chinese. They cover the same features on
+  purpose; when they say different things, **SPEC wins and the design doc gets a
+  dated revision note** rather than a silent rewrite — the superseded reasoning
+  is the useful part.
 - **LLM 推理与动作缓存是调用方的**（设计文档 §6.3 / §11）。daemon 提供快照、`/act`
   重放 + 三级回退，不内置 LLM、不内置 `key → Action[]` 缓存 KV——lilto 等调用方自己
   存、命中就重放、`needsInference` 时重新推理并写回。别把这两层拖回 daemon。
@@ -206,10 +260,13 @@ the `/events` cursor without reattaching.
 Sole developer; commit to `main` directly (no branch/PR). Commit subject `type: description`.
 Do **not** add a `Co-Authored-By` trailer. Push only when the user asks.
 
+Tags are releases: `v<version>`, major = `PROTOCOL_VERSION`. Tag only when the
+user asks — pushing a tag triggers `.github/workflows/release.yml`.
+
 ## Working with the user
 
-- **Verify before claiming done and before committing:** `npm test` green +
-  `npm run typecheck` clean + `npm run lint` clean. Edits can silently mis-apply
+- **Verify before claiming done and before committing:** `npm run check` green
+  (version sync + typecheck + lint + unit tests + all suites + the packaging test). Edits can silently mis-apply
   on large files — re-read the region after editing to confirm it landed.
 - **Observation ≠ inference.** Confirm command output by reading files; don't trust
   a possibly-scrambled terminal echo.
@@ -254,6 +311,8 @@ Do **not** add a `Co-Authored-By` trailer. Push only when the user asks.
   executor (`ExtConn.act`) runs each action with the three-level fallback
   (xpath → elementHash re-locate → `needsInference`) and the batch guards
   (`terminatesSequence` + a page-`revision` re-check that keeps partial results).
+  Not protocol, same release: the repo became a publishable package
+  (`@wuwe1/cdp-relay`, major = protocol version) — see Distribution.
 
 v3 and v4 were motivated by an audit against `browserbase/stagehand` and
 `browser-use` (see `docs/cdp-relay-design.md`, which also carries the measured

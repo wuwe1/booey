@@ -1,0 +1,19 @@
+{
+  // Publish-time build only. Development runs the .ts directly (Node type
+  // stripping); this exists because Node refuses to strip types for files
+  // under node_modules, so a consumer needs real .js + .d.ts.
+  //
+  // `rewriteRelativeImportExtensions` is what keeps the source honest: we go on
+  // writing `import "./config.ts"` and tsc emits `"./config.js"`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rewriteRelativeImportExtensions": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "."
+  },
+  "include": ["daemon/**/*.ts", "clients/ts/**/*.ts", "cli/**/*.ts"]
+}

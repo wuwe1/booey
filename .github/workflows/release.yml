@@ -1,0 +1,39 @@
+name: release
+
+# Tag with the protocol version in the major: v6.0.0 speaks protocol v6.
+# The extension zip is attached to the release because a browser can only load
+# an unpacked directory a human points at — it does not come down with npm.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write # npm provenance
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Package the extension
+        run: node cli/cdp-relay.ts ext zip cdp-relay-extension-${{ github.ref_name }}.zip
+      - name: Publish the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: cdp-relay-extension-${{ github.ref_name }}.zip
+          generate_release_notes: true
+      # Opt-in: set the repository variable NPM_PUBLISH=true (and configure a
+      # trusted publisher on npmjs) to also push the tarball to the registry.
+      # Until then the git tag is the release, which is all a git dependency needs.
+      - name: Publish to npm
+        if: vars.NPM_PUBLISH == 'true'
+        run: npm publish

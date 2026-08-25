@@ -4,14 +4,31 @@ import { Buffer } from "node:buffer";
 //
 // Multi-browser: pick a target with --browser <id|label>. When exactly one
 // browser is connected the flag is optional (the daemon auto-selects).
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DAEMON_SCRIPT = resolve(__dirname, "..", "daemon", "server.ts");
-const DEFAULT_PORT = 9224; // match daemon/config.mjs; 9223 is the legacy v1 relay
+
+// Two layouts: the repo (cli/ next to daemon/, .ts) and the published package
+// (dist/cli/ next to dist/daemon/, .js). Probe rather than branch on a flag —
+// there is nothing at runtime that reliably says which one we are in.
+function firstExisting(...paths: string[]): string {
+  return paths.find((p) => existsSync(p)) || paths[paths.length - 1]!;
+}
+
+const DAEMON_SCRIPT = firstExisting(
+  resolve(__dirname, "..", "daemon", "server.ts"),
+  resolve(__dirname, "..", "daemon", "server.js"),
+);
+// The extension is shipped verbatim (never compiled), so it sits at the package
+// root — one level up from cli/, two from dist/cli/.
+const EXTENSION_DIR = firstExisting(
+  resolve(__dirname, "..", "extension"),
+  resolve(__dirname, "..", "..", "extension"),
+);
+const DEFAULT_PORT = 9224; // match daemon/config.ts; 9223 is the legacy v1 relay
 
 // ---- arg parse ----
 
@@ -210,6 +227,28 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// The extension is plain JS and ships uncompiled, so its PROTOCOL_VERSION is
+// only readable as source. Cheap, and it is the number that actually decides
+// whether a browser can connect.
+function bundledExtProtocol(): number | null {
+  try {
+    const src = readFileSync(resolve(EXTENSION_DIR, "background.js"), "utf8");
+    const m = src.match(/PROTOCOL_VERSION\s*=\s*(\d+)/);
+    return m ? Number(m[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function pkgVersion(): string | null {
+  try {
+    const pkg = JSON.parse(readFileSync(resolve(dirname(EXTENSION_DIR), "package.json"), "utf8"));
+    return pkg.version || null;
+  } catch {
+    return null;
+  }
+}
+
 // ---- subcommands ----
 
 const cmds: Record<string, () => Promise<void>> = {
@@ -219,6 +258,60 @@ const cmds: Record<string, () => Promise<void>> = {
     if (sub === "stop") return out(await stopDaemon());
     if (sub === "status") return out(await daemonStatus());
     fail(`daemon: expected start|stop|status, got ${sub || "(nothing)"}`);
+  },
+
+  // Where the extension lives, so a user can point "Load unpacked" at it even
+  // when the package sits somewhere inside node_modules.
+  async ext() {
+    const sub = args[1] || "path";
+    if (sub === "path") return out(EXTENSION_DIR);
+    if (sub === "zip") {
+      const dest = resolve(String(args[2] || `cdp-relay-ext-${pkgVersion() || "dev"}.zip`));
+      const { status, error } = spawnSync(
+        "zip",
+        ["-qr", dest, ".", "-x", ".*", "-x", "__MACOSX/*"],
+        { cwd: EXTENSION_DIR, stdio: "inherit" },
+      );
+      if (error || status !== 0)
+        fail(`ext zip: needs the \`zip\` command (${error?.message || `exit ${status}`})`);
+      return out({ ok: true, zip: dest });
+    }
+    fail(`ext: expected path|zip, got ${sub}`);
+  },
+
+  // Version drift is this system's characteristic failure: the daemon updates
+  // with npm, the extension only when a human reloads it. A mismatched ext is
+  // closed with 4000 and stops reconnecting, which looks like "nothing happens".
+  async doctor() {
+    const bundled = bundledExtProtocol();
+    const daemon = await daemonStatus();
+    const problems: string[] = [];
+    if (!daemon.running) {
+      problems.push(`no daemon on :${PORT} — start it with \`cdp-relay daemon start\``);
+    } else if (bundled !== null && daemon.version !== bundled) {
+      problems.push(
+        `daemon speaks protocol v${daemon.version} but the bundled extension speaks v${bundled} — ` +
+          `reload ${EXTENSION_DIR} in every browser (chrome://extensions)`,
+      );
+    } else if (!daemon.browserCount) {
+      problems.push(
+        "daemon is up but no browser is connected — load the extension " +
+          `(cdp-relay ext path) and check its popup. A protocol mismatch closes the socket ` +
+          "with 4000 and the extension then stops retrying.",
+      );
+    }
+    out({
+      cli: { version: pkgVersion(), root: dirname(EXTENSION_DIR) },
+      extension: { dir: EXTENSION_DIR, protocolVersion: bundled },
+      daemon: { port: PORT, running: !!daemon.running, protocolVersion: daemon.version ?? null },
+      browsers: (daemon.browsers || []).map((b: any) => ({
+        id: b.id,
+        label: b.label,
+        tabCount: b.tabCount,
+      })),
+      problems,
+    });
+    if (problems.length) process.exitCode = 1;
   },
 
   async browsers() {
@@ -525,6 +618,11 @@ INSPECT
 
 ESCAPE
   cdp-relay send <tabId> <Method> [<params-json>]
+
+SETUP
+  cdp-relay ext path                       # where to point chrome://extensions "Load unpacked"
+  cdp-relay ext zip [<out.zip>]            # package extension/ for distribution
+  cdp-relay doctor                         # daemon / extension / protocol-version check
 
 GLOBAL
   --browser <id|label>   target browser (optional when only one is connected;

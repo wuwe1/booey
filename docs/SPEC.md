@@ -24,7 +24,7 @@ within one tab     mixed      ordered commands serialize,
 ```
 
 A command is **ordered** unless its method appears in `UNORDERED_CDP_METHODS`
-(`daemon/config.mjs`) — the default is always the serializing one. Ordered
+(`daemon/config.ts`) — the default is always the serializing one. Ordered
 commands hold their tab exclusively: they wait for the lane to drain and nothing
 starts behind them until they answer. That covers everything with tab-scoped
 race surface (input dispatch, navigation, focus, dialogs). The unordered list is
@@ -50,7 +50,7 @@ A **selector** is `Domain.method` or `Domain.*`. The list drives two things:
 Filtering happens **in the extension, before any stringify/send/store**. An event
 nobody subscribed to costs one `Set.has` and nothing else.
 
-**Presets** (`EVENT_PRESETS` in `daemon/config.mjs`):
+**Presets** (`EVENT_PRESETS` in `daemon/config.ts`):
 
 | preset | selectors | enables |
 |---|---|---|
@@ -526,7 +526,8 @@ protocol change updates it in the same commit that breaks it. Node runs the
 `.ts` directly (native type stripping, no build step).
 
 ```ts
-import { RelayClient } from "cdp-relay/clients/ts/index.ts";
+import { RelayClient } from "@wuwe1/cdp-relay";        // published package
+// import { RelayClient } from "../clients/ts/index.ts";   // in-repo
 const relay = new RelayClient({ browser: "shopee-A" });
 const tab = await relay.findOrOpenTab(/seller\.shopee\.tw/, "https://seller.shopee.tw/");
 await relay.attach(tab.tabId, { events: ["net"] });
@@ -538,23 +539,30 @@ const title = await relay.evalFn(tab.tabId, () => document.title);
 ```
 cdp-relay/
 ├── docs/SPEC.md          # this file
-├── clients/ts/index.ts   # supported typed client
+├── clients/ts/index.ts   # supported typed client (published as the package root)
 ├── daemon/
-│   ├── config.mjs        # protocol constants
-│   ├── http-error.mjs    # Error + httpCode
-│   ├── ring-buffer.mjs   # O(1) fixed-cap FIFO (event cache)
-│   ├── ext-conn.mjs      # ExtConn: one browser — scheduler + attach + event cache
-│   ├── registry.mjs      # ExtRegistry: Map<id,ExtConn> + selector resolution
-│   ├── server.mjs        # HTTP + WS bootstrap, thin router
-│   └── test-mock-ext.mjs # protocol test double (multi-instance)
-├── extension/
+│   ├── config.ts         # protocol constants + event presets + selector expansion
+│   ├── http-error.ts     # Error + httpCode + machine-readable code / retriable
+│   ├── ring-buffer.ts    # O(1) fixed-cap FIFO (event cache)
+│   ├── ext-conn.ts       # ExtConn: one browser — scheduler + attach + event cache + act
+│   ├── page-model.ts     # three trees → NodeRecord[] → indexedText + selectorMap
+│   ├── actions.ts        # the closed action vocabulary + its metadata
+│   ├── registry.ts       # ExtRegistry: Map<id,ExtConn> + selector resolution
+│   ├── server.ts         # HTTP + WS bootstrap, thin router
+│   └── test-mock-ext.ts  # protocol test double (multi-instance)
+├── extension/            # plain JS, shipped uncompiled
 │   ├── manifest.json
 │   ├── background.js     # identity + daemon WS client + chrome.debugger bridge
 │   ├── offscreen-heartbeat.{html,js}  # SW keep-alive Port
 │   ├── popup.html
 │   └── popup.js          # debug fallback + label editor
-└── cli/cdp-relay         # entry; subcommands
+└── cli/cdp-relay.ts      # entry; subcommands
 ```
+
+Everything in `daemon/`, `clients/`, and `cli/` is TypeScript that Node runs
+directly (type stripping, no build step in development). `npm run build` emits
+`dist/` for publishing only — Node will not strip types under `node_modules`,
+so the published package must carry real `.js` + `.d.ts`.
 
 PID/log per port: `/tmp/cdp-relay-<port>.pid` · `/tmp/cdp-relay-<port>.log`.
 
@@ -573,7 +581,13 @@ cdp-relay net <tabId> {list|body|clear} [--filter <re>] [--since <seq>] [<reques
 cdp-relay screenshot <tabId> [<path>] [--browser <id|label>]
 cdp-relay nav <tabId> <url> [--browser <id|label>]
 cdp-relay send <tabId> <Method> [<params-json>] [--browser <id|label>]
+
+cdp-relay ext path|zip [<out.zip>]                # locate / package the extension
+cdp-relay doctor                                  # daemon + extension + protocol-version check
 ```
+
+The CLI does not cover `/snapshot`, `/act`, `/page`, or `/sessions` — those are
+reached over HTTP or through `clients/ts`.
 
 `--browser` may also be supplied via env `CDP_RELAY_BROWSER`. Output is
 JSON-line by default (`--pretty` for human reading).

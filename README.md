@@ -14,6 +14,17 @@ Why an extension and not `--remote-debugging-port`? Because `chrome.debugger`'s
 browser you're already logged into. (Cost: Chrome shows a "an extension is
 debugging this browser" banner while attached.)
 
+Three layers, each usable on its own:
+
+| | | |
+|---|---|---|
+| **L1** transport | multiplexed CDP RPC, per-tab concurrency, event subscriptions | `/send` `/events` |
+| **L2** page model | snapshot → flat nodes + LLM-facing indexed text + stable element identity | `/snapshot` |
+| **L3** actions | eleven element actions, replayed with a three-level fallback | `/act` |
+
+It is **not** an agent: no LLM, no agent loop, no action cache. Those belong to
+the caller ([design doc](docs/cdp-relay-design.md) §6.3 / §11).
+
 ## Multi-browser
 
 One daemon, many browsers, concurrently. **Build/install the extension once and
@@ -32,30 +43,49 @@ address it by label or id.
 
 ## Install
 
+**The package major is the protocol version.** `@wuwe1/cdp-relay@6` speaks
+protocol v6 and only talks to a v6 extension; a mismatch closes the socket with
+code `4000` and the extension stops reconnecting. Pin the major, and reload the
+extension when you bump it.
+
 ```sh
-npm install            # just `ws`
+# from the repo (no registry account needed — the package builds on install)
+npm install github:wuwe1/cdp-relay#v6.0.0
+# or, once published
+npm install @wuwe1/cdp-relay
 ```
 
-Load the extension in each browser: `chrome://extensions` → enable Developer
-mode → "Load unpacked" → select `extension/`. Open the popup and set a **label**.
+Then load the extension **in each browser** — it can't ride along with npm,
+because Chrome needs a human to point at a directory:
+
+```sh
+npx cdp-relay ext path      # → …/node_modules/@wuwe1/cdp-relay/extension
+```
+
+`chrome://extensions` → enable Developer mode → "Load unpacked" → that path.
+Open the popup and set a **label**. Repeat per browser/profile.
+
+```sh
+npx cdp-relay doctor        # daemon up? extension loaded? protocol versions agreed?
+```
 
 ## Quick start
 
 ```sh
 # 1. start the daemon (one, shared by all browsers)
-node cli/cdp-relay.ts daemon start
+npx cdp-relay daemon start
 
 # 2. see who's connected
-node cli/cdp-relay.ts browsers
+npx cdp-relay browsers
 # → [{ "id": "…", "label": "shopee-A", "attached": [], "tabCount": 7 }, …]
 
 # 3. list tabs in a specific browser, attach, and run JS
-node cli/cdp-relay.ts tabs --browser shopee-A
-node cli/cdp-relay.ts attach 1734 --browser shopee-A
-node cli/cdp-relay.ts eval 1734 "document.title" --browser shopee-A
+npx cdp-relay tabs --browser shopee-A
+npx cdp-relay attach 1734 --browser shopee-A
+npx cdp-relay eval 1734 "document.title" --browser shopee-A
 
 # 4. another browser, in parallel — independent scheduler
-node cli/cdp-relay.ts eval 980 "location.href" --browser shopee-B
+npx cdp-relay eval 980 "location.href" --browser shopee-B
 ```
 
 When only **one** browser is connected, `--browser` is optional. Set
@@ -63,11 +93,11 @@ When only **one** browser is connected, `--browser` is optional. Set
 
 ## Using it from code
 
-`clients/ts` is the supported client — typed, no build step (Node strips the
-types natively), shipped with the protocol so it can't drift from it.
+The typed client ships with the protocol, in this repo, so a wire change and the
+client it breaks land in the same commit.
 
 ```ts
-import { RelayClient } from "./clients/ts/index.ts";
+import { RelayClient } from "@wuwe1/cdp-relay";
 
 const relay = new RelayClient({ browser: "shopee-A" });      // or $CDP_RELAY_BROWSER
 const tab = await relay.findOrOpenTab(/seller\.shopee\.tw/, "https://seller.shopee.tw/");
@@ -85,12 +115,42 @@ Failures split three ways: `PageJsError` (the page's JS threw), `RelayError`
 with `.code` + `.retriable` (transport / daemon / debugger), and a plain
 resolved value. Branch on `.code`, never on the message text.
 
+Talking to the daemon over plain HTTP is equally supported and equally stable —
+the client is a convenience, not a gate. Endpoints are in the SPEC.
+
+Package entry points:
+
+| specifier | what |
+|---|---|
+| `@wuwe1/cdp-relay` | the typed client (`RelayClient`, error types, `NodeRecord`/`Snapshot`/action types) |
+| `@wuwe1/cdp-relay/daemon` | the daemon bootstrap — importing it starts a server (embedders normally spawn it instead) |
+| `@wuwe1/cdp-relay/mock-ext` | the protocol test double, for testing a consumer without a real browser |
+| `@wuwe1/cdp-relay/extension/*` | the unpacked extension's files |
+
 ## Docs
 
-- [`docs/SPEC.md`](docs/SPEC.md) — protocol v4: WS/HTTP contract, concurrency
-  model, event subscriptions, addressing, error codes, file map.
+- [`docs/SPEC.md`](docs/SPEC.md) — protocol v6: WS/HTTP contract, concurrency
+  model, event subscriptions, sessions, page model, actions, error codes.
+- [`docs/cdp-relay-design.md`](docs/cdp-relay-design.md) — why it is shaped this
+  way, with the measured numbers behind each choice, and what is deliberately
+  not built.
 
-## Testing without a real browser
+## Development
+
+No build step: Node ≥22.18 runs the `.ts` directly (type stripping).
+
+```sh
+npm install
+node daemon/server.ts 9224          # or: node cli/cdp-relay.ts daemon start
+npm run check                        # version sync + typecheck + lint + tests + packaging
+```
+
+A build exists only at publish time (`npm run build` → `dist/`), because Node
+refuses to strip types for files under `node_modules` — a consumer needs real
+`.js` + `.d.ts`. `npm run test:pack` installs the packed tarball the way a
+consumer would and drives the daemon, client, and CLI out of `node_modules`.
+
+### Testing without a real browser
 
 ```sh
 node daemon/server.ts 9229 &
@@ -99,3 +159,15 @@ node daemon/test-mock-ext.ts 9229 browser-B shopee-B &
 node cli/cdp-relay.ts --port 9229 browsers
 node cli/cdp-relay.ts --port 9229 eval 1001 "x" --browser shopee-A
 ```
+
+Mocks cover the protocol layer only. Anything involving a real page — the
+snapshot pipeline, actions, OOPIFs — has to be checked against a browser with
+the extension loaded.
+
+### Releasing
+
+1. Bump `version` in `package.json` **and** `extension/manifest.json` (major =
+   `PROTOCOL_VERSION`; `npm run version:check` enforces it).
+2. `npm run check`.
+3. Tag `v<version>` and push — CI builds the release and attaches the extension
+   zip (`cdp-relay ext zip` locally does the same).

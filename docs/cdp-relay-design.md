@@ -6,7 +6,9 @@
 - `browserbase/stagehand@a21633d`
 - `browser-use/browser-use@85ddbfe`
 
-代码：`~/Developer/cdp-relay`（协议 v4）。契约见该仓库 `docs/SPEC.md`。
+代码：`~/Developer/cdp-relay` / [github.com/wuwe1/cdp-relay](https://github.com/wuwe1/cdp-relay)（协议 v6，
+发布为 `@wuwe1/cdp-relay@6`——包主版本号 = 协议号）。**契约见 `docs/SPEC.md`**：那边写「是什么」，
+这边写「为什么、量了多少、下一步」。两边讲同一个东西时，SPEC 是准的。
 
 > **本文里的数字全是实测的**，2026-08-24 在真实 Chrome 上跑的（`learning.oreilly.com` +
 > 一个本地 dev app）。上一版文档里的估算有两处错了一个数量级以上，都已按实测改正，
@@ -32,9 +34,9 @@
 ## 2. 分层
 
 ```
-┌─ L3 actions ──── observe / act / extract ── cache + self-heal + 批量守卫   ← 未开始
-├─ L2 page model ─ snapshot → indexed text + selectorMap + 三级身份          ← 未开始
-├─ L1 transport ── 多路复用 RPC（per-tab 并发）+ 事件订阅                     ← ✅ v3 + v4
+┌─ L3 actions ──── act 重放 + 三级回退 + 批量守卫（缓存/LLM 在调用方）      ← ✅ v6（F）
+├─ L2 page model ─ snapshot → indexed text + selectorMap + 三级身份          ← ✅ v6（C/D/E）
+├─ L1 transport ── 多路复用 RPC（per-tab 并发）+ 事件订阅 + sessionId 寻址     ← ✅ v3 + v4 + v5
 └─ L0 browser ──── extension ── chrome.debugger ── tab                      ← ✅
 ```
 
@@ -48,7 +50,7 @@
 
 | 表面 | 给谁 | 状态 |
 |---|---|---|
-| **HTTP + `clients/ts`** | lilto 等直接消费者 | ✅ 见 `SPEC.md` |
+| **HTTP + `clients/ts`** | lilto 等直接消费者 | ✅ 见 `SPEC.md`；发布为 `@wuwe1/cdp-relay` |
 | **CLI** | 人 / 脚本 | ✅ |
 | **标准 CDP endpoint** | Playwright / puppeteer / browser-use | ⏸ 暂缓（SDK + CLI 已覆盖当前消费者，见 §11） |
 
@@ -170,9 +172,9 @@ stagehand 把全部逻辑放进扩展（34k 行）。我们不这么做，理由
 |---|---|
 | `chrome.debugger` I/O | 跨 frame 合并、XPath 前缀拼接 |
 | 逐 frame 取三棵树 | 序列化成带索引文本 |
-| **结构剪枝**（可延后，见上） | 三级身份计算与维护 |
-| **事件按订阅过滤** ✅ 已做 | 动作缓存 + self-heal |
-| **offscreen 心跳** ✅ 已做 | LLM 编排 |
+| ~~结构剪枝~~（实测不必要，§12.1） | 三级身份计算与维护 ✅ 已做 |
+| **事件按订阅过滤** ✅ 已做 | 动作重放 + self-heal ✅ 已做（缓存在调用方，§6.3） |
+| **offscreen 心跳** ✅ 已做 | ~~LLM 编排~~（不做，§11） |
 
 **扩展代码量目标：< 1500 行**，且只有加新 CDP 能力时才需要动。（当前 `background.js` ~560 行。）
 
@@ -200,9 +202,16 @@ stagehand 把全部逻辑放进扩展（34k 行）。我们不这么做，理由
 
 **但跨 frame 的 XPath 前缀拼接抄 stagehand 的**（`xpathUtils.ts` 108 行 + `treeFormatUtils.injectSubtrees` 154 行）。这两个文件独立、好抽，而 browser-use 是按 target 各管各的，这块没做好。
 
-### 5.2 扩展 → daemon 的线格式：NodeRecord
+### 5.2 NodeRecord
 
-逐 frame 取 `DOM.getDocument` + `DOMSnapshot.captureSnapshot` + `Accessibility.getFullAXTree`，就地合并剪枝，输出扁平数组：
+逐 frame 取 `DOM.getDocument` + `DOMSnapshot.captureSnapshot` + `Accessibility.getFullAXTree`，合并成扁平数组：
+
+> **2026-08-25 修订：合并发生在 daemon，不在扩展。** 本节原标题是「扩展 → daemon 的
+> **线格式**」，设想扩展就地合并剪枝再回传。实现时按 §4 的分工原则和 §12 的实测走了另一条：
+> **扩展原样回传三棵树，daemon 做全部合并、XPath、哈希、序列化**。理由是 §12.1 量出来的
+> ——271 节点的完整 `Snapshot` 才 85KB，扩展侧剪枝省不出什么，却把最常改的代码焊死在
+> 需要用户重载的那一半里。下面的 NodeRecord 仍然是准确的**产物**格式（权威定义见
+> SPEC「Page model」），只是它在 daemon 里生成。
 
 ```jsonc
 {
@@ -213,9 +222,11 @@ stagehand 把全部逻辑放进扩展（34k 行）。我们不这么做，理由
   "name":   "加入购物车",     // AX name
   "attrs":  { "id": "add-cart", "class": "btn primary", "type": "submit" },  // 白名单
   "rect":   [120, 480, 96, 36],
-  "vis":    1,
-  "int":    1,               // 可交互
-  "xp":     "/html/body/div[2]/button"   // frame 内相对 XPath
+  "vis":    true,
+  "int":    true,            // 可交互
+  "xp":     "/html[1]/body[1]/div[2]/button[1]",  // 兄弟序号 XPath，跨 frame 已加宿主前缀
+  "elementHash":      "9f3a…",   // 见 5.3c
+  "parentBranchHash": "7c2b…"
 }
 ```
 
@@ -280,9 +291,18 @@ Page.loadEventFired      → 脏
 
 **比 browser-use 的「动作后比对 URL」更准**——弹出模态框不改 URL，但 selectorMap 已经失效。
 
+> **实现修订：是单调计数器 `revision`，不是脏标记。** 标记要有人清，而一个 tab 一旦有两个
+> 调用方，「谁来清」就没有答案。改成每个调用方自己记基线、比大小，谁也清不掉谁的。
+> 快照缓存绑在捕获时的 `revision` 上，`GET /snapshot` 用 `stale` 告诉你页面已经动过。
+> 另一处约束：**精度受订阅上限**——没订阅的事件根本到不了 daemon，实测一次真实 reload
+> `nav` 只 +2，`nav,dom` +4。细节见 SPEC「Page revision」。
+
 ---
 
 ## 6. L3 动作层
+
+> **状态：已落地（v6 / 里程碑 F）**，但只落地了「可重放的执行」那一半：`POST /act` +
+> 三级回退 + 批量守卫。`observe` / `extract` 需要 LLM，按 §6.3 / §11 属于调用方。
 
 ### 6.1 三个原语
 
@@ -433,16 +453,9 @@ KV 存在调用方手里，daemon 只管把动作原语做到无状态、可重�
 
 **lane 粒度仍然是 tab。** OOPIF 的 session 跟宿主 tab 共享焦点、对话框、导航，所以排序必须在 tab 粒度决定——session 是地址，不是并发域。
 
-**长期状态要以 `targetId` 为键，不是 `sessionId`**：后者 detach/reattach 后会变。browser-use 的 `SessionManager` 是这块的参考实现，它踩过的一个坑值得记：
-
-```python
-# browser_use/browser/session_manager.py:48
-# cdp-use's event registry is single-slot per CDP method, so per-session handler
-# registrations would replace each other and leave every tab but the most
-# recently attached one without lifecycle events.
-```
-
-browser-use 的 `SessionManager` 是这块的参考实现（单一真源，靠 `Target.attachedToTarget` / `detachedFromTarget` 事件维护 session 池）。有一条它踩过的坑值得记：
+**长期状态要以 `targetId` 为键，不是 `sessionId`**：后者 detach/reattach 后会变。
+browser-use 的 `SessionManager` 是这块的参考实现（单一真源，靠 `Target.attachedToTarget` /
+`detachedFromTarget` 事件维护 session 池）。有一条它踩过的坑值得记：
 
 ```python
 # browser_use/browser/session_manager.py:48
@@ -478,16 +491,21 @@ browser-use 的 `SessionManager` 是这块的参考实现（单一真源，靠 `
    flat session 传输 ✅ v5 已通
 ```
 
-| | 内容 | 依赖 |
-|---|---|---|
-| ✅ | L0 + L1：多浏览器、per-tab 并发、事件订阅、`sessionId` 寻址、HTTP 接口 | — |
-| **A** | **事件驱动脏标记** | 无。v4 已经在推 `Page.frameNavigated` / `loadEventFired`，加个 `DOM.documentUpdated` 订阅和一个标志位 |
-| **B** | **session 生命周期**（自动 `setAutoAttach` + per-tab session 池 + 事件按 target 归属） | v5 |
-| C | 取三棵树 + 跨 frame 合并 → NodeRecord | B |
-| D | `elementHash` / `parentBranchHash` | C |
-| E | 剪枝 + serializer（DOM-first）+ selectorMap | C |
-| F | L3：动作层 + 三级回退 + 两层半守卫（缓存留给调用方，见 §6.3） | A + D + E |
-| G | 标准 CDP 门面（⏸ 暂缓，YAGNI，见 §2 / §11） | B |
+> **2026-08-25：A–F 全部落地（v6）。** 下表保留原始排期，因为「为什么是这个顺序」比
+> 「做完了」有用；状态列是现在的。
+
+| | 内容 | 依赖 | 状态 |
+|---|---|---|---|
+| ✅ | L0 + L1：多浏览器、per-tab 并发、事件订阅、`sessionId` 寻址、HTTP 接口 | — | v3/v4/v5 |
+| **A** | **事件驱动脏标记**（落地成单调 `revision`，见 §5.4） | 无 | ✅ v5 |
+| **B** | **session 生命周期**（自动 `setAutoAttach` + per-tab session 池 + 事件按 target 归属） | v5 | ✅ v5 |
+| C | 取三棵树 + 跨 frame 合并 → NodeRecord（合并在 daemon，见 §5.2） | B | ✅ v6 |
+| D | `elementHash` / `parentBranchHash` | C | ✅ v6 |
+| E | serializer（DOM-first）+ `indexedText` + selectorMap（未做扩展侧剪枝，§12.1） | C | ✅ v6 |
+| F | L3：动作层 + 三级回退 + 两层半守卫（缓存留给调用方，见 §6.3） | A + D + E | ✅ v6 |
+| G | 标准 CDP 门面 | B | ⏸ 暂缓，YAGNI，见 §2 / §11 |
+
+（下面两段是排期时的判断，留档。）
 
 **A 是唯一真·零依赖的**，而且它同时是两个下游的地基（第三层守卫、快照失效）。先做它。
 

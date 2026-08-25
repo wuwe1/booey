@@ -1,26 +1,65 @@
 {
-  "name": "cdp-relay",
-  "version": "0.4.0",
-  "private": true,
+  "name": "@wuwe1/cdp-relay",
+  "version": "6.0.0",
   "type": "module",
   "description": "Multi-browser CDP relay: drive any number of already-logged-in browsers from one local daemon via a chrome.debugger extension. See docs/SPEC.md.",
-  "bin": {
-    "cdp-relay": "cli/cdp-relay.ts"
+  "keywords": [
+    "cdp",
+    "chrome-devtools-protocol",
+    "chrome-extension",
+    "browser-automation",
+    "chrome.debugger",
+    "agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wuwe1/cdp-relay.git"
   },
+  "homepage": "https://github.com/wuwe1/cdp-relay#readme",
+  "bugs": "https://github.com/wuwe1/cdp-relay/issues",
+  "bin": {
+    "cdp-relay": "dist/cli/cdp-relay.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/clients/ts/index.d.ts",
+      "default": "./dist/clients/ts/index.js"
+    },
+    "./daemon": {
+      "types": "./dist/daemon/server.d.ts",
+      "default": "./dist/daemon/server.js"
+    },
+    "./mock-ext": {
+      "types": "./dist/daemon/test-mock-ext.d.ts",
+      "default": "./dist/daemon/test-mock-ext.js"
+    },
+    "./extension/*": "./extension/*",
+    "./package.json": "./package.json"
+  },
+  "types": "./dist/clients/ts/index.d.ts",
+  "files": [
+    "dist",
+    "extension",
+    "docs/SPEC.md"
+  ],
   "scripts": {
     "cdp-relay": "node cli/cdp-relay.ts",
     "daemon": "node daemon/server.ts",
     "mock-ext": "node daemon/test-mock-ext.ts",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
     "test": "node test/integration.mjs && node test/client.mjs && node test/compat-lilto.mjs",
     "test:compat": "node test/compat-lilto.mjs",
     "test:client": "node test/client.mjs",
     "test:unit": "node --test test/page-model.test.ts test/actions.test.ts",
+    "test:pack": "node test/pack.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
     "lint:fix": "biome check --write",
     "format": "biome format --write",
     "format:check": "biome format",
-    "check": "npm run typecheck && npm run lint && npm test"
+    "version:check": "node scripts/check-versions.mjs",
+    "check": "npm run version:check && npm run typecheck && npm run lint && npm run test:unit && npm test && npm run test:pack"
   },
   "dependencies": {
     "ws": "^8.18.0"
@@ -33,5 +72,9 @@
     "@types/node": "^26.2.0",
     "@types/ws": "^8.18.1",
     "typescript": "^7.0.2"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }

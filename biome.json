@@ -7,6 +7,7 @@
       "cli/**/*.ts",
       "test/**/*.mjs",
       "test/**/*.ts",
+      "scripts/**/*.mjs",
       "!test/fixtures",
       "!node_modules",
       "!docs"
