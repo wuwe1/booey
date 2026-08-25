@@ -138,6 +138,13 @@ which is why the npm registry is optional here.
   `dist/` exists. `tsconfig.build.json` turns on `rewriteRelativeImportExtensions`
   so the source keeps its honest `./config.ts` specifiers and the emit gets
   `./config.js`. **Never** "fix" this by rewriting imports to `.js`.
+- **A git-tag install builds on the consumer's machine** (`prepare`), and
+  **pnpm blocks dependency lifecycle scripts by default** — the install fails
+  until the consumer allows this package to build (`allowBuilds` in
+  `pnpm-workspace.yaml`; verified against pnpm 11, both the failure and the fix).
+  npm has no such gate. Publishing to the registry removes the whole problem,
+  since that tarball arrives prebuilt — the strongest argument for actually
+  turning on `NPM_PUBLISH`.
 - **`test/pack.mjs` is the only test that sees the published shape.** It packs,
   extracts into a `node_modules`, and drives daemon + client + CLI from there.
   A packaging mistake is invisible everywhere else in this repo and shows up in

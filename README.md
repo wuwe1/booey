@@ -50,6 +50,19 @@ npm install github:wuwe1/cdp-relay#v1.0.0
 npm install @wuwe1/cdp-relay
 ```
 
+Installing from the git tag means the package builds itself in `prepare`, and
+**pnpm blocks dependency lifecycle scripts by default** — the install fails
+outright. Allow this one package to build:
+
+```yaml
+# pnpm-workspace.yaml
+allowBuilds:
+  "@wuwe1/cdp-relay": true
+```
+
+Installing from the npm registry needs none of that: that tarball is already
+built.
+
 **The daemon and the extension have to speak the same protocol version.** They
 ship in the same tarball, so the only way to get that wrong is to update the
 package and not reload the extension — and then the daemon closes the socket
