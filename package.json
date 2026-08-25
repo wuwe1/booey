@@ -15,6 +15,7 @@
     "type": "git",
     "url": "git+https://github.com/wuwe1/cdp-relay.git"
   },
+  "license": "MIT",
   "homepage": "https://github.com/wuwe1/cdp-relay#readme",
   "bugs": "https://github.com/wuwe1/cdp-relay/issues",
   "bin": {
@@ -40,7 +41,8 @@
   "files": [
     "dist",
     "extension",
-    "docs/SPEC.md"
+    "docs/SPEC.md",
+    "LICENSE"
   ],
   "scripts": {
     "cdp-relay": "node cli/cdp-relay.ts",

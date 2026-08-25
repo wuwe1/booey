@@ -141,6 +141,15 @@ which is why the npm registry is optional here.
 - **The extension cannot ship through npm to a browser** — Chrome needs a human
   pointing "Load unpacked" at a directory. It rides in the tarball anyway, and
   `cdp-relay ext path` prints where it landed; the tag's GH release carries a zip.
+- **`extension/manifest.json` pins `key`**, fixing the extension ID at
+  `dnjdeckelhabngmngmmmhgjnkfhadabl`. `chrome.storage.local` — where the
+  browserId and label live — is scoped to that ID, so an unpinned (path-derived)
+  ID means moving the directory wipes every browser's identity. `version:check`
+  fails if the key is removed or produces a different ID; changing it on purpose
+  means updating `EXTENSION_ID` in `scripts/check-versions.mjs` **and** relabeling
+  every browser by hand. The matching private key is `extension-key.pem` at the
+  repo root — gitignored, not needed for "Load unpacked", only for ever packing a
+  CRX with this same ID. Keep a backup outside the repo; never commit or publish it.
 - **`cdp-relay doctor`** exists for the characteristic failure of this
   arrangement: daemon updated, extension not reloaded ⇒ close `4000` ⇒ the
   extension gives up permanently and the symptom is "nothing happens".

@@ -1,4 +1,8 @@
 node_modules/
+
+# the extension's signing key — pins the extension ID, never publish it
+extension-key.pem
+
 dist/
 *.tgz
 *.log

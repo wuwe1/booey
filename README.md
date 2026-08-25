@@ -65,6 +65,13 @@ npx cdp-relay ext path      # → …/node_modules/@wuwe1/cdp-relay/extension
 `chrome://extensions` → enable Developer mode → "Load unpacked" → that path.
 Open the popup and set a **label**. Repeat per browser/profile.
 
+The manifest pins a `key`, so the extension ID is fixed
+(`dnjdeckelhabngmngmmmhgjnkfhadabl`) no matter which directory you load it from.
+That matters because the browser's persistent id and its label live in
+`chrome.storage.local`, which is scoped to the extension ID — without the pin,
+the ID comes from the install path and moving the directory would silently reset
+every browser's identity.
+
 ```sh
 npx cdp-relay doctor        # daemon up? extension loaded? protocol versions agreed?
 ```
@@ -171,3 +178,7 @@ the extension loaded.
 2. `npm run check`.
 3. Tag `v<version>` and push — CI builds the release and attaches the extension
    zip (`cdp-relay ext zip` locally does the same).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
