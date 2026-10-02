@@ -1,4 +1,4 @@
-// cdp-relay daemon — embeddable factory. See ../docs/SPEC.md for the protocol.
+// booey daemon — embeddable factory. See ../docs/SPEC.md for the protocol.
 //
 // `createDaemon()` builds the whole daemon (HTTP router + /ext WS server +
 // heartbeat) and returns a handle you can `close()`. It installs no signal
@@ -6,7 +6,7 @@
 // (daemon/server.ts). A consumer that wants the daemon in-process (no separate
 // node process) imports this directly:
 //
-//   import { createDaemon } from "@wuwe1/cdp-relay/daemon";
+//   import { createDaemon } from "@wuwe1/booey/daemon";
 //   const d = await createDaemon({ port: 9224 });
 //   // ... talk to 127.0.0.1:9224 over HTTP (e.g. via RelayClient) ...
 //   await d.close();
@@ -46,7 +46,7 @@ export interface Daemon {
 }
 
 function defaultLog(...args: any[]): void {
-  console.error(`[cdp-relay ${new Date().toISOString()}]`, ...args);
+  console.error(`[booey ${new Date().toISOString()}]`, ...args);
 }
 
 /**

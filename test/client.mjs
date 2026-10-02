@@ -70,7 +70,7 @@ const chkc = (n, got, sub) => {
 };
 
 try {
-  spawnNode(["daemon/server.ts", String(PORT)], { CDP_RELAY_CMD_TIMEOUT_MS: "800" });
+  spawnNode(["daemon/server.ts", String(PORT)], { BOOEY_CMD_TIMEOUT_MS: "800" });
   if (!(await pollUntil(async () => (await fetch(`http://127.0.0.1:${PORT}/status`)).ok)))
     throw new Error("daemon never came up");
   spawnNode(["daemon/test-mock-ext.ts", String(PORT), "browser-A", "shopee-A"]);

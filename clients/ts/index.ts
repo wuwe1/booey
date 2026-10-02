@@ -1,5 +1,5 @@
 /**
- * cdp-relay typed client.
+ * booey typed client.
  *
  * The daemon's HTTP surface is the contract (see ../../docs/SPEC.md); this is
  * the supported way to speak it. It lives in this repo, not in each consumer,
@@ -242,7 +242,7 @@ export interface EventPage {
 }
 
 export interface RelayOptions {
-  /** Daemon base URL. Default: $CDP_RELAY_URL, else http://127.0.0.1:9224 */
+  /** Daemon base URL. Default: $BOOEY_URL, else http://127.0.0.1:9224 */
   base?: string;
   /** Target browser: its id or its label. Optional when only one is connected. */
   browser?: string;
@@ -263,8 +263,8 @@ export class RelayClient {
   private readonly beforeRequest?: () => void;
 
   constructor(opts: RelayOptions = {}) {
-    this.base = opts.base ?? process.env.CDP_RELAY_URL ?? DEFAULT_BASE;
-    this.browser = opts.browser ?? process.env.CDP_RELAY_BROWSER ?? undefined;
+    this.base = opts.base ?? process.env.BOOEY_URL ?? DEFAULT_BASE;
+    this.browser = opts.browser ?? process.env.BOOEY_BROWSER ?? undefined;
     this.timeoutMs = opts.timeoutMs;
     this.beforeRequest = opts.beforeRequest;
   }

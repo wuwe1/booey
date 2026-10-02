@@ -1,8 +1,8 @@
 {
-  "name": "@wuwe1/cdp-relay",
+  "name": "@wuwe1/booey",
   "version": "1.0.0",
   "type": "module",
-  "description": "Multi-browser CDP relay: drive any number of already-logged-in browsers from one local daemon via a chrome.debugger extension. See docs/SPEC.md.",
+  "description": "Booey — a thin agent that drives any number of already-logged-in local browsers from one process, over a chrome.debugger extension (multi-browser CDP relay). See docs/SPEC.md.",
   "keywords": [
     "cdp",
     "chrome-devtools-protocol",
@@ -13,13 +13,13 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/wuwe1/cdp-relay.git"
+    "url": "git+https://github.com/wuwe1/booey.git"
   },
   "license": "MIT",
-  "homepage": "https://github.com/wuwe1/cdp-relay#readme",
-  "bugs": "https://github.com/wuwe1/cdp-relay/issues",
+  "homepage": "https://github.com/wuwe1/booey#readme",
+  "bugs": "https://github.com/wuwe1/booey/issues",
   "bin": {
-    "cdp-relay": "dist/cli/cdp-relay.js"
+    "booey": "dist/cli/booey.js"
   },
   "exports": {
     ".": {
@@ -45,7 +45,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "cdp-relay": "node cli/cdp-relay.ts",
+    "booey": "node cli/booey.ts",
     "daemon": "node daemon/server.ts",
     "mock-ext": "node daemon/test-mock-ext.ts",
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
@@ -66,7 +66,7 @@
   "dependencies": {
     "ws": "^8.18.0"
   },
-  "cdpRelay": {
+  "booey": {
     "protocolVersion": 6
   },
   "engines": {

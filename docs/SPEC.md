@@ -1,4 +1,4 @@
-# cdp-relay SPEC (protocol v6)
+# Booey SPEC (protocol v6)
 
 Contract between the three segments: daemon / ext / CLI. This file is the
 **contract** only — message schema, HTTP endpoints, error codes, addressing.
@@ -344,7 +344,7 @@ held. `filter` is a regex matched against `method`.
   Without it, losing events and nothing happening look identical.
 
 Event cache is per `(browserId, tabId)`, a ring buffer (cap 1000; override with
-`CDP_RELAY_EVENT_CACHE_CAP`). Cleared on `attach` / `detach` / ext `detached`
+`BOOEY_EVENT_CACHE_CAP`). Cleared on `attach` / `detach` / ext `detached`
 push / `events/clear`.
 
 ## Page model (snapshot)
@@ -476,7 +476,7 @@ Two things retire a command before it answers. In both cases the id is retired,
 so the answer — which chrome.debugger may still deliver — lands nowhere.
 
 - **Timeout.** `CMD_TIMEOUT_MS` (default 30s, override with the
-  `CDP_RELAY_CMD_TIMEOUT_MS` env var; malformed values are ignored with a
+  `BOOEY_CMD_TIMEOUT_MS` env var; malformed values are ignored with a
   warning) without a response → 504.
 - **Tab detached.** An ext `detached` push fails that tab's in-flight and queued
   commands immediately with 409, leaving other tabs' lanes running. Without
@@ -527,7 +527,7 @@ protocol change updates it in the same commit that breaks it. Node runs the
 `.ts` directly (native type stripping, no build step).
 
 ```ts
-import { RelayClient } from "@wuwe1/cdp-relay";        // published package
+import { RelayClient } from "@wuwe1/booey";        // published package
 // import { RelayClient } from "../clients/ts/index.ts";   // in-repo
 const relay = new RelayClient({ browser: "shopee-A" });
 const tab = await relay.findOrOpenTab(/seller\.shopee\.tw/, "https://seller.shopee.tw/");
@@ -542,7 +542,7 @@ process — a consumer that is the daemon's only caller can skip the standalone
 process (and its PID/port management) entirely:
 
 ```ts
-import { createDaemon } from "@wuwe1/cdp-relay/daemon";
+import { createDaemon } from "@wuwe1/booey/daemon";
 const daemon = await createDaemon({ port: 9224 });   // resolves once listening
 // ... talk to 127.0.0.1:9224 as usual (RelayClient, CLI, raw HTTP) ...
 await daemon.close();                                 // frees the port
@@ -556,7 +556,7 @@ the port. `daemon/server.ts` is the thin standalone entry built on this.
 ## File structure
 
 ```
-cdp-relay/
+booey/
 ├── docs/SPEC.md          # this file
 ├── clients/ts/index.ts   # supported typed client (published as the package root)
 ├── daemon/
@@ -576,7 +576,7 @@ cdp-relay/
 │   ├── offscreen-heartbeat.{html,js}  # SW keep-alive Port
 │   ├── popup.html
 │   └── popup.js          # status / identity panel (daemon state, counters, label editor)
-└── cli/cdp-relay.ts      # entry; subcommands
+└── cli/booey.ts      # entry; subcommands
 ```
 
 Everything in `daemon/`, `clients/`, and `cli/` is TypeScript that Node runs
@@ -584,30 +584,30 @@ directly (type stripping, no build step in development). `npm run build` emits
 `dist/` for publishing only — Node will not strip types under `node_modules`,
 so the published package must carry real `.js` + `.d.ts`.
 
-PID/log per port: `/tmp/cdp-relay-<port>.pid` · `/tmp/cdp-relay-<port>.log`.
+PID/log per port: `/tmp/booey-<port>.pid` · `/tmp/booey-<port>.log`.
 
 ## CLI surface
 
 ```
-cdp-relay daemon start|stop|status [--port 9224]
-cdp-relay browsers                                # list connected browsers
+booey daemon start|stop|status [--port 9224]
+booey browsers                                # list connected browsers
 
-cdp-relay tabs [--browser <id|label>]
-cdp-relay attach <tabId> [--events nav,net] [--browser <id|label>]
-cdp-relay detach <tabId> [--browser <id|label>]
-cdp-relay events show|subscribe <tabId> [<selectors>]
-cdp-relay eval <tabId> <js> [--await] [--browser <id|label>]
-cdp-relay net <tabId> {list|body|clear} [--filter <re>] [--since <seq>] [<requestId>] [--browser <id|label>]
-cdp-relay screenshot <tabId> [<path>] [--browser <id|label>]
-cdp-relay nav <tabId> <url> [--browser <id|label>]
-cdp-relay send <tabId> <Method> [<params-json>] [--browser <id|label>]
+booey tabs [--browser <id|label>]
+booey attach <tabId> [--events nav,net] [--browser <id|label>]
+booey detach <tabId> [--browser <id|label>]
+booey events show|subscribe <tabId> [<selectors>]
+booey eval <tabId> <js> [--await] [--browser <id|label>]
+booey net <tabId> {list|body|clear} [--filter <re>] [--since <seq>] [<requestId>] [--browser <id|label>]
+booey screenshot <tabId> [<path>] [--browser <id|label>]
+booey nav <tabId> <url> [--browser <id|label>]
+booey send <tabId> <Method> [<params-json>] [--browser <id|label>]
 
-cdp-relay ext path|zip [<out.zip>]                # locate / package the extension
-cdp-relay doctor                                  # daemon + extension + protocol-version check
+booey ext path|zip [<out.zip>]                # locate / package the extension
+booey doctor                                  # daemon + extension + protocol-version check
 ```
 
 The CLI does not cover `/snapshot`, `/act`, `/page`, or `/sessions` — those are
 reached over HTTP or through `clients/ts`.
 
-`--browser` may also be supplied via env `CDP_RELAY_BROWSER`. Output is
+`--browser` may also be supplied via env `BOOEY_BROWSER`. Output is
 JSON-line by default (`--pretty` for human reading).

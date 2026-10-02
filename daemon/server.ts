@@ -1,4 +1,4 @@
-// cdp-relay daemon — standalone entry. See ../docs/SPEC.md for the protocol.
+// booey daemon — standalone entry. See ../docs/SPEC.md for the protocol.
 //
 // Thin wrapper over createDaemon (daemon/create.ts): it owns the things a
 // long-running process owns — port from argv/env, signal handlers, exit on bind
@@ -8,10 +8,10 @@
 import { DEFAULT_PORT } from "./config.ts";
 import { createDaemon } from "./create.ts";
 
-const port = Number(process.env.CDP_RELAY_PORT || process.argv[2] || DEFAULT_PORT);
+const port = Number(process.env.BOOEY_PORT || process.argv[2] || DEFAULT_PORT);
 
 function log(...args: any[]): void {
-  console.error(`[cdp-relay ${new Date().toISOString()}]`, ...args);
+  console.error(`[booey ${new Date().toISOString()}]`, ...args);
 }
 
 let daemon: Awaited<ReturnType<typeof createDaemon>>;

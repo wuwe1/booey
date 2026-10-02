@@ -8,7 +8,7 @@
 //
 // The package version and the protocol version are INDEPENDENT (the package is
 // on normal semver; the protocol is a wire number that only moves when the wire
-// moves). `package.json#cdpRelay.protocolVersion` is the published statement of
+// moves). `package.json#booey.protocolVersion` is the published statement of
 // which protocol a release speaks, and it must match the constants in the code —
 // otherwise the field is a lie a consumer would read and pin against.
 import { createHash } from "node:crypto";
@@ -74,12 +74,12 @@ if (distinct.length > 1) {
   problems.push(`PROTOCOL_VERSION disagrees: ${JSON.stringify(sources)}`);
 }
 
-const declared = pkg.cdpRelay?.protocolVersion;
+const declared = pkg.booey?.protocolVersion;
 if (typeof declared !== "number") {
-  problems.push("package.json is missing cdpRelay.protocolVersion");
+  problems.push("package.json is missing booey.protocolVersion");
 } else if (distinct.length === 1 && distinct[0] !== declared) {
   problems.push(
-    `package.json cdpRelay.protocolVersion ${declared} !== PROTOCOL_VERSION ${distinct[0]} — ` +
+    `package.json booey.protocolVersion ${declared} !== PROTOCOL_VERSION ${distinct[0]} — ` +
       "a protocol bump has to be declared in the package too (see docs/SPEC.md)",
   );
 }

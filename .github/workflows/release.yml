@@ -25,11 +25,11 @@ jobs:
       - run: npm ci
       - run: npm run check
       - name: Package the extension
-        run: node cli/cdp-relay.ts ext zip cdp-relay-extension-${{ github.ref_name }}.zip
+        run: node cli/booey.ts ext zip booey-extension-${{ github.ref_name }}.zip
       - name: Publish the GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: cdp-relay-extension-${{ github.ref_name }}.zip
+          files: booey-extension-${{ github.ref_name }}.zip
           generate_release_notes: true
       # Opt-in: set the repository variable NPM_PUBLISH=true (and configure a
       # trusted publisher on npmjs) to also push the tarball to the registry.

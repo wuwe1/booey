@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "cdp-relay",
+  "name": "Booey",
   "version": "1.0.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAidaMbP716KIvgAcH5QGXlzT/5sD/yCkbuArIng6jD673U+sxUPib2VWHX2j/3MG7TlBVvnZ1H08Uow8Z1rabZ3UKerUVsCqoYU285CQmw+c3B7VBfimZRuTjkYXG/rMMAwFJJascCqfjyfo/vLA2yxJ1B6hrRbqjTjLV80HhRjYDkEU+EVCTxe3nuqQ6uQEWHwXVL/Pi71iGWPCW0DSLlqsioxoyZqqBVJTY8jUAMtwO9atKjgxWJLShVUqgPnT4U02h1kgEjjXE9ZA7L37Fa+DcWVLYwD+tXdpS8QXT0HmXWUtojhrU9JpfxPhxt8bHbWMVbYDZhmY+3KN+T7gWSQIDAQAB",
-  "description": "Bridge chrome.debugger to a local daemon (cdp-relay) for agent-driven control. Multi-browser: each profile gets a persistent id; set a label in the popup. Popup is a debug fallback when the daemon is offline.",
+  "description": "Booey — bridge chrome.debugger to a local daemon for agent-driven control. Multi-browser: each profile gets a persistent id; set a label in the popup. The popup is a status/identity panel (daemon state, counters, label).",
   "permissions": [
     "debugger",
     "tabs",
@@ -20,6 +20,6 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "cdp-relay"
+    "default_title": "Booey"
   }
 }

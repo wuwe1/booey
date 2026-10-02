@@ -1,4 +1,4 @@
-# cdp-relay —— 设计与路线
+# Booey —— 设计与路线
 
 > 把一个**已经开着、已经登录**的浏览器，变成一等公民的自动化目标。
 
@@ -6,9 +6,9 @@
 - `browserbase/stagehand@a21633d`
 - `browser-use/browser-use@85ddbfe`
 
-代码：`~/Developer/cdp-relay` / [github.com/wuwe1/cdp-relay](https://github.com/wuwe1/cdp-relay)
-（协议 v6，发布为 `@wuwe1/cdp-relay`，首个版本 1.0.0——包版本走普通 semver，
-协议号单独声明在 `package.json` 的 `cdpRelay.protocolVersion`）。**契约见 `docs/SPEC.md`**：那边写「是什么」，
+代码：`~/Developer/cdp-relay` / [github.com/wuwe1/booey](https://github.com/wuwe1/booey)
+（协议 v6，发布为 `@wuwe1/booey`，首个版本 1.0.0——包版本走普通 semver，
+协议号单独声明在 `package.json` 的 `booey.protocolVersion`）。**契约见 `docs/SPEC.md`**：那边写「是什么」，
 这边写「为什么、量了多少、下一步」。两边讲同一个东西时，SPEC 是准的。
 
 > **本文里的数字全是实测的**，2026-08-24 在真实 Chrome 上跑的（`learning.oreilly.com` +
@@ -28,7 +28,7 @@
 | `stagehand` | 浏览器内运行时 + act/observe/extract | 抄它的**页面模型**与**自愈结构**；不抄部署形态（它要自己 launch） |
 | `browser-use` | 完整自主 agent | 抄它的**序列化格式**与**动作守卫**；不抄 agent loop |
 
-**cdp-relay 不是 agent。** 它是 agent 站的地板。控制流由使用者写。
+**booey 不是 agent。** 它是 agent 站的地板。控制流由使用者写。
 
 ---
 
@@ -51,7 +51,7 @@
 
 | 表面 | 给谁 | 状态 |
 |---|---|---|
-| **HTTP + `clients/ts`** | lilto 等直接消费者 | ✅ 见 `SPEC.md`；发布为 `@wuwe1/cdp-relay@1`（协议 v6） |
+| **HTTP + `clients/ts`** | lilto 等直接消费者 | ✅ 见 `SPEC.md`；发布为 `@wuwe1/booey@1`（协议 v6） |
 | **CLI** | 人 / 脚本 | ✅ |
 | **标准 CDP endpoint** | Playwright / puppeteer / browser-use | ⏸ 暂缓（SDK + CLI 已覆盖当前消费者，见 §11） |
 

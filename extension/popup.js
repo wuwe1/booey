@@ -1,4 +1,4 @@
-// popup.js — status & identity panel for the cdp-relay extension.
+// popup.js — status & identity panel for the Booey extension.
 //
 // Read-only except for the label editor and a manual reconnect. Talks to
 // background via chrome.runtime.sendMessage; works whether the daemon is up or

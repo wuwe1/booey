@@ -75,7 +75,7 @@ const chkc = (n, got, sub) => {
   }
 };
 const cli = (...a) =>
-  execFileSync(process.execPath, ["cli/cdp-relay.ts", "--port", String(PORT), ...a], {
+  execFileSync(process.execPath, ["cli/booey.ts", "--port", String(PORT), ...a], {
     cwd: ROOT,
   }).toString();
 
@@ -85,8 +85,8 @@ try {
   // CMD_TIMEOUT_MS is shortened so the "daemon gave up on a command" path is
   // reachable inside a test run; the cache is shrunk so ring truncation is too.
   spawnNode(["daemon/server.ts", String(PORT)], {
-    CDP_RELAY_CMD_TIMEOUT_MS: "500",
-    CDP_RELAY_EVENT_CACHE_CAP: "4",
+    BOOEY_CMD_TIMEOUT_MS: "500",
+    BOOEY_EVENT_CACHE_CAP: "4",
   });
   if (!(await pollUntil(async () => (await jget("/status")).status === 200)))
     throw new Error("daemon never came up");

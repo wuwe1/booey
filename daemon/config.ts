@@ -18,17 +18,17 @@ function envNum(name: string, fallback: number): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) {
     console.error(
-      `[cdp-relay] ignoring ${name}=${JSON.stringify(raw)} (not a positive finite number); using ${fallback}`,
+      `[booey] ignoring ${name}=${JSON.stringify(raw)} (not a positive finite number); using ${fallback}`,
     );
     return fallback;
   }
   return n;
 }
 
-export const CMD_TIMEOUT_MS = envNum("CDP_RELAY_CMD_TIMEOUT_MS", 30_000); // per-command in-flight timeout
+export const CMD_TIMEOUT_MS = envNum("BOOEY_CMD_TIMEOUT_MS", 30_000); // per-command in-flight timeout
 export const HEARTBEAT_MS = 25_000; // daemon→ext ping cadence (keeps MV3 SW alive)
 export const NO_DATA_TIMEOUT_MS = 60_000; // close a conn that goes silent this long
-export const EVENT_CACHE_CAP = envNum("CDP_RELAY_EVENT_CACHE_CAP", 1000); // per-(browser,tab) ring capacity
+export const EVENT_CACHE_CAP = envNum("BOOEY_EVENT_CACHE_CAP", 1000); // per-(browser,tab) ring capacity
 export const MAX_INFLIGHT_PER_TAB = 8; // cap on concurrent unordered commands per tab
 
 /**

@@ -7,7 +7,7 @@
 //
 // Nothing is communicated. Delivery is the entire point.
 
-const HEARTBEAT_PORT = "cdp-relay-heartbeat";
+const HEARTBEAT_PORT = "booey-heartbeat";
 const HEARTBEAT_INTERVAL_MS = 1_000;
 const RECONNECT_DELAY_MS = 250;
 

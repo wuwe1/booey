@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = Number(process.argv[2] || 9243);
-const PKG_NAME = "@wuwe1/cdp-relay";
+const PKG_NAME = "@wuwe1/booey";
 
 let PASS = 0;
 let FAIL = 0;
@@ -53,7 +53,7 @@ async function pollUntil(fn, tries = 100, gap = 50) {
 
 // realpath: macOS hands out /var/... which is a symlink to /private/var/...,
 // and the CLI resolves the real one — compare like for like.
-const tmp = realpathSync(mkdtempSync(resolve(tmpdir(), "cdp-relay-pack-")));
+const tmp = realpathSync(mkdtempSync(resolve(tmpdir(), "booey-pack-")));
 const consumer = resolve(tmp, "consumer");
 const installed = resolve(consumer, "node_modules", PKG_NAME);
 
@@ -122,7 +122,7 @@ ok(
 );
 
 // 5. the CLI, run from inside node_modules, finds the daemon and the extension
-const bin = resolve(installed, "dist", "cli", "cdp-relay.js");
+const bin = resolve(installed, "dist", "cli", "booey.js");
 const extPath = run(process.execPath, [bin, "ext", "path"], { cwd: consumer });
 ok("`ext path` resolves inside the package", extPath === resolve(installed, "extension"), extPath);
 

@@ -5,7 +5,7 @@ in the same change that invalidates it.
 
 ## What this is
 
-`cdp-relay` drives **multiple already-logged-in browsers** from one local process
+`booey` drives **multiple already-logged-in browsers** from one local process
 over the Chrome DevTools Protocol, through a browser extension that bridges
 `chrome.debugger`. One daemon, many browsers, addressed by id/label, running
 concurrently. No `--remote-debugging-port`, no lost sessions.
@@ -30,9 +30,9 @@ npm run build                                     # dist/ — publish-time only,
 
 node daemon/server.ts [port]                     # run the daemon (default 9224)
 node daemon/test-mock-ext.ts <port> <id> <label> # a fake browser (protocol test double)
-node cli/cdp-relay.ts <command> [--browser <id|label>] [--port N]   # the CLI; `cli/cdp-relay help`
-node cli/cdp-relay.ts ext path                   # where to point "Load unpacked"
-node cli/cdp-relay.ts doctor                     # daemon/extension/protocol-version check
+node cli/booey.ts <command> [--browser <id|label>] [--port N]   # the CLI; `cli/booey help`
+node cli/booey.ts ext path                   # where to point "Load unpacked"
+node cli/booey.ts doctor                     # daemon/extension/protocol-version check
 ```
 
 **No build step in development** — Node ≥22.18 runs `.ts` directly via type
@@ -57,14 +57,14 @@ daemon/
   test-mock-ext.ts protocol test double; pass id/label to simulate a browser
 extension/          MV3: background.js (identity + WS client + debugger bridge),
                     offscreen-heartbeat.{html,js}, popup.{html,js}, manifest.json
-cli/cdp-relay.ts    Node CLI over the HTTP API
+cli/booey.ts    Node CLI over the HTTP API
 scripts/check-versions.mjs  the one number that lives in five files
 test/integration.mjs  protocol-level end-to-end harness
 test/client.mjs       drives clients/ts against the daemon
 test/compat-lilto.mjs drives lilto's OWN client (a frozen copy) — see below
 test/pack.mjs         packs + installs the tarball, drives it from node_modules
 docs/SPEC.md        protocol contract (authoritative)
-docs/cdp-relay-design.md  why it is shaped this way + measured numbers (see Docs)
+docs/booey-design.md  why it is shaped this way + measured numbers (see Docs)
 .github/workflows/  ci (checks on push) + release (tag → GH release + ext zip)
 dist/               build output, gitignored, publish only
 ```
@@ -122,14 +122,14 @@ side.** It runs its own `src/relay/client.ts`; pointing it here is a matter of
 
 ## Distribution
 
-Published as **`@wuwe1/cdp-relay`** from this repo (`github.com/wuwe1/cdp-relay`);
+Published as **`@wuwe1/booey`** from this repo (`github.com/wuwe1/booey`);
 consumers can equally install the git tag directly (`prepare` builds on install),
 which is why the npm registry is optional here.
 
 - **Package version and protocol version are independent.** The package is on
   ordinary semver (1.0.0 is the first release); `PROTOCOL_VERSION` is a wire
   number that moves only when the wire moves. The published statement of which
-  protocol a release speaks is `package.json` → `cdpRelay.protocolVersion`, and
+  protocol a release speaks is `package.json` → `booey.protocolVersion`, and
   `scripts/check-versions.mjs` enforces it against the three in-code constants,
   plus package.json ↔ `extension/manifest.json`. It runs first in `npm run check`.
   Daemon and extension ship together, so the only realistic way to get a version
@@ -152,7 +152,7 @@ which is why the npm registry is optional here.
   the consumer, on install day.
 - **The extension cannot ship through npm to a browser** — Chrome needs a human
   pointing "Load unpacked" at a directory. It rides in the tarball anyway, and
-  `cdp-relay ext path` prints where it landed; the tag's GH release carries a zip.
+  `booey ext path` prints where it landed; the tag's GH release carries a zip.
 - **`extension/manifest.json` pins `key`**, fixing the extension ID at
   `dnjdeckelhabngmngmmmhgjnkfhadabl`. `chrome.storage.local` — where the
   browserId and label live — is scoped to that ID, so an unpinned (path-derived)
@@ -162,7 +162,7 @@ which is why the npm registry is optional here.
   every browser by hand. The matching private key is `extension-key.pem` at the
   repo root — gitignored, not needed for "Load unpacked", only for ever packing a
   CRX with this same ID. Keep a backup outside the repo; never commit or publish it.
-- **`cdp-relay doctor`** exists for the characteristic failure of this
+- **`booey doctor`** exists for the characteristic failure of this
   arrangement: daemon updated, extension not reloaded ⇒ close `4000` ⇒ the
   extension gives up permanently and the symptom is "nothing happens".
 - Release = bump both versions → `npm run check` → tag `v<version>` → push.
@@ -181,8 +181,8 @@ and same-id reconnect. `npm test` runs three suites in order — expect
 `FAIL=0`, exit 0. `npm run test:pack` is separate (`PASS=13`) because it builds
 a tarball — see Distribution.
 
-The daemon under test runs with `CDP_RELAY_CMD_TIMEOUT_MS=500` (give-up path)
-and `CDP_RELAY_EVENT_CACHE_CAP=4` (ring truncation) so both are reachable
+The daemon under test runs with `BOOEY_CMD_TIMEOUT_MS=500` (give-up path)
+and `BOOEY_EVENT_CACHE_CAP=4` (ring truncation) so both are reachable
 in-suite. The timing assertions have teeth — verified by
 mutation (emptying `UNORDERED_CDP_METHODS` fails "intra-tab reads overlap";
 pairing responses positionally fails "next command gets its OWN answer"; removing
@@ -214,7 +214,7 @@ the `/events` cursor without reattaching.
 - **Protocol changes are a six-file edit:** bump `PROTOCOL_VERSION` in
   `daemon/config.ts`, `extension/background.js`, **and**
   `daemon/test-mock-ext.ts` (all must match, or the daemon closes with code
-  `4000`), bump `cdpRelay.protocolVersion` in `package.json`, and bump the
+  `4000`), bump `booey.protocolVersion` in `package.json`, and bump the
   package + `extension/manifest.json` versions together (semver, independent of
   the wire number), then update `docs/SPEC.md`. `npm run version:check` catches
   five of the six. A daemon and extension on
@@ -224,7 +224,7 @@ the `/events` cursor without reattaching.
   against; drift is a real bug.
 - **Two docs, two jobs — don't merge them and don't duplicate across them.**
   `docs/SPEC.md` is normative and present-tense: what the wire, the endpoints,
-  and the error codes *are*, in English. `docs/cdp-relay-design.md` is the
+  and the error codes *are*, in English. `docs/booey-design.md` is the
   reasoning: why this shape, what was measured (with numbers), what was rejected,
   what is deliberately not built, in Chinese. They cover the same features on
   purpose; when they say different things, **SPEC wins and the design doc gets a
@@ -243,7 +243,7 @@ the `/events` cursor without reattaching.
   event never reaches the daemon, so `nav` alone under-reports document swaps.
   Never present the revision as more precise than the subscription allows.
 - **Subscriptions are not retroactive.** Subscribe before the traffic you want,
-  not after. `cdp-relay net list` fails loudly when Network isn't subscribed
+  not after. `booey net list` fails loudly when Network isn't subscribed
   rather than returning an empty list that reads like "no requests happened".
 - **`Network.disable` drops the response-body buffer** — fetch bodies before
   narrowing a subscription away from Network.
@@ -275,7 +275,7 @@ the `/events` cursor without reattaching.
   only shorten the outage afterwards. Asking for 0.4min gets you 0.5min.
 - **Same-id reconnect** kicks the stale connection (`4002`) and keeps the identity.
   State is keyed on the persistent id, not connection order — don't change that.
-- PID/log files are per-port: `/tmp/cdp-relay-<port>.{pid,log}`.
+- PID/log files are per-port: `/tmp/booey-<port>.{pid,log}`.
 
 ## Git
 
@@ -334,18 +334,18 @@ user asks — pushing a tag triggers `.github/workflows/release.yml`.
   (xpath → elementHash re-locate → `needsInference`) and the batch guards
   (`terminatesSequence` + a page-`revision` re-check that keeps partial results).
   Not protocol, same release: the repo became a publishable package
-  (`@wuwe1/cdp-relay`, first release 1.0.0, declaring protocol v6 in
-  `cdpRelay.protocolVersion`) — see Distribution.
+  (`@wuwe1/booey`, first release 1.0.0, declaring protocol v6 in
+  `booey.protocolVersion`) — see Distribution.
 
 v3 and v4 were motivated by an audit against `browserbase/stagehand` and
-`browser-use` (see `docs/cdp-relay-design.md`, which also carries the measured
+`browser-use` (see `docs/booey-design.md`, which also carries the measured
 numbers behind these choices; the reference checkouts live in
 `~/Developer/browser_agent/`).
 
 ## Provenance
 
-Ported from `listo` repo's `dev/cdp-relay/` (single-browser, protocol v1) and
+Ported from `listo` repo's `dev/booey/` (single-browser, protocol v1) and
 rewritten for multi-browser (protocol v2). The original lives at
-`~/Developer/listo/dev/cdp-relay/`. A separate copy of the daemon is embedded in
-`listo-agent`'s Electron main (`src/main/cdp-relay-daemon.ts`) and is **not** yet
+`~/Developer/listo/dev/booey/`. A separate copy of the daemon is embedded in
+`listo-agent`'s Electron main (`src/main/booey-daemon.ts`) and is **not** yet
 upgraded to v2 — out of scope unless explicitly asked.

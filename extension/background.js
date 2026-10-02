@@ -1,4 +1,4 @@
-// cdp-relay extension background — see ../docs/SPEC.md for protocol.
+// booey extension background — see ../docs/SPEC.md for protocol.
 //
 // The daemon (WS at ws://127.0.0.1:<port>/ext) is the sole debugger consumer: it
 // attaches tabs, subscribes events, and drives chrome.debugger. The popup is only
@@ -33,7 +33,7 @@ const WS_BUFFER_LIMIT_BYTES = 4 * 1024 * 1024; // above this, shed events (never
 //      minimum, so asking for less does not get you less; the old 0.4min/"24s"
 //      comment here was wrong. Recovery latency is therefore up to ~30s, which
 //      is precisely why (1) exists.
-const KEEPALIVE_ALARM = "cdp-relay-keepalive";
+const KEEPALIVE_ALARM = "booey-keepalive";
 const KEEPALIVE_PERIOD_MIN = 0.5; // 30s — Chrome's floor; asking for less is ignored
 // Domains that deliver events without an enable call. Target is the one that
 // matters here: `Target.enable` does not exist in CDP (-32601), and its events
@@ -41,7 +41,7 @@ const KEEPALIVE_PERIOD_MIN = 0.5; // 30s — Chrome's floor; asking for less is 
 // attach reports a failed domain — and `failed` is supposed to mean "you typo'd
 // a domain name", so a permanent entry there trains callers to ignore it.
 const NO_ENABLE_DOMAINS = new Set(["Target"]);
-const HEARTBEAT_PORT = "cdp-relay-heartbeat";
+const HEARTBEAT_PORT = "booey-heartbeat";
 const HEARTBEAT_DOC = "offscreen-heartbeat.html";
 
 // ---- identity (persistent, per-profile) ----
@@ -49,6 +49,11 @@ let identity = null; // { id, label }
 
 async function ensureIdentity() {
   if (identity) return identity;
+  // NOTE: the storage keys keep the legacy `cdpRelay*` names on purpose. They are
+  // the persisted browser id + label; renaming them to `booey*` would read empty
+  // on every already-installed browser, minting a fresh id and wiping the label —
+  // exactly the identity loss the pinned manifest key exists to prevent. The name
+  // on disk is invisible; leave it.
   const got = await chrome.storage.local.get(["cdpRelayId", "cdpRelayLabel"]);
   let id = got.cdpRelayId;
   if (!id) {
@@ -557,7 +562,7 @@ chrome.runtime.onStartup.addListener(() => void ensureHeartbeatDocument());
 // ---- bootstrap ----
 
 function log(...args) {
-  console.log("[cdp-relay]", ...args);
+  console.log("[booey]", ...args);
 }
 
 void ensureHeartbeatDocument();

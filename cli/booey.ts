@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Buffer } from "node:buffer";
-// cdp-relay CLI — see ../docs/SPEC.md for protocol contract.
+// booey CLI — see ../docs/SPEC.md for protocol contract.
 //
 // Multi-browser: pick a target with --browser <id|label>. When exactly one
 // browser is connected the flag is optional (the daemon auto-selects).
@@ -64,10 +64,10 @@ function parseArgs(argv: string[]): { args: string[]; flags: Record<string, any>
 
 const { args, flags } = parseArgs(process.argv.slice(2));
 const PRETTY = !!flags.pretty;
-const PORT = Number(flags.port || process.env.CDP_RELAY_PORT || DEFAULT_PORT);
-const BROWSER = flags.browser || process.env.CDP_RELAY_BROWSER || "";
-const PID_FILE = `/tmp/cdp-relay-${PORT}.pid`;
-const LOG_FILE = `/tmp/cdp-relay-${PORT}.log`;
+const PORT = Number(flags.port || process.env.BOOEY_PORT || DEFAULT_PORT);
+const BROWSER = flags.browser || process.env.BOOEY_BROWSER || "";
+const PID_FILE = `/tmp/booey-${PORT}.pid`;
+const LOG_FILE = `/tmp/booey-${PORT}.log`;
 
 function out(obj: any): void {
   if (PRETTY) {
@@ -78,7 +78,7 @@ function out(obj: any): void {
 }
 
 function fail(msg: string, code = 1): never {
-  console.error("cdp-relay:", msg);
+  console.error("booey:", msg);
   process.exit(code);
 }
 
@@ -105,7 +105,7 @@ async function api(path: string, opts: RequestInit = {}): Promise<{ status: numb
   try {
     res = await fetch(url, opts);
   } catch (e) {
-    fail(`daemon unreachable on :${PORT} (${(e as Error).message}). Try: cdp-relay daemon start`);
+    fail(`daemon unreachable on :${PORT} (${(e as Error).message}). Try: booey daemon start`);
   }
   const text = await res.text();
   let body: any;
@@ -184,7 +184,7 @@ async function startDaemon() {
   const child = spawn(process.execPath, [DAEMON_SCRIPT, String(PORT)], {
     detached: true,
     stdio: ["ignore", log, log],
-    env: { ...process.env, CDP_RELAY_PORT: String(PORT) },
+    env: { ...process.env, BOOEY_PORT: String(PORT) },
   });
   child.unref();
   writeFileSync(PID_FILE, String(child.pid), "utf8");
@@ -266,7 +266,7 @@ const cmds: Record<string, () => Promise<void>> = {
     const sub = args[1] || "path";
     if (sub === "path") return out(EXTENSION_DIR);
     if (sub === "zip") {
-      const dest = resolve(String(args[2] || `cdp-relay-ext-${pkgVersion() || "dev"}.zip`));
+      const dest = resolve(String(args[2] || `booey-ext-${pkgVersion() || "dev"}.zip`));
       const { status, error } = spawnSync(
         "zip",
         ["-qr", dest, ".", "-x", ".*", "-x", "__MACOSX/*"],
@@ -287,7 +287,7 @@ const cmds: Record<string, () => Promise<void>> = {
     const daemon = await daemonStatus();
     const problems: string[] = [];
     if (!daemon.running) {
-      problems.push(`no daemon on :${PORT} — start it with \`cdp-relay daemon start\``);
+      problems.push(`no daemon on :${PORT} — start it with \`booey daemon start\``);
     } else if (bundled !== null && daemon.version !== bundled) {
       problems.push(
         `daemon speaks protocol v${daemon.version} but the bundled extension speaks v${bundled} — ` +
@@ -296,7 +296,7 @@ const cmds: Record<string, () => Promise<void>> = {
     } else if (!daemon.browserCount) {
       problems.push(
         "daemon is up but no browser is connected — load the extension " +
-          `(cdp-relay ext path) and check its popup. A protocol mismatch closes the socket ` +
+          `(booey ext path) and check its popup. A protocol mismatch closes the socket ` +
           "with 4000 and the extension then stops retrying.",
       );
     }
@@ -423,7 +423,7 @@ const cmds: Record<string, () => Promise<void>> = {
       );
       if (!((subState.events || []) as string[]).some((sel) => sel.startsWith("Network."))) {
         fail(
-          `no Network subscription on tab ${tabId} — run \`cdp-relay attach ${tabId} --events net\` ` +
+          `no Network subscription on tab ${tabId} — run \`booey attach ${tabId} --events net\` ` +
             "BEFORE the traffic you want to capture (subscriptions are not retroactive)",
         );
       }
@@ -481,7 +481,7 @@ const cmds: Record<string, () => Promise<void>> = {
 
   async screenshot() {
     const tabId = numArg(1, "tabId");
-    const path = args[2] || `/tmp/cdp-relay-${Date.now()}.png`;
+    const path = args[2] || `/tmp/booey-${Date.now()}.png`;
     const r = await post(
       "/send",
       withBrowser({
@@ -590,44 +590,44 @@ function formatEval(val: any): string {
 }
 
 function printHelp() {
-  console.log(`cdp-relay — CDP via browser-extension relay (see docs/SPEC.md)
+  console.log(`booey — CDP via browser-extension relay (see docs/SPEC.md)
 
 DAEMON
-  cdp-relay daemon start [--port 9224]
-  cdp-relay daemon stop
-  cdp-relay daemon status
+  booey daemon start [--port 9224]
+  booey daemon stop
+  booey daemon status
 
 BROWSERS
-  cdp-relay browsers                       # list connected browsers [{id, label, attached}]
+  booey browsers                       # list connected browsers [{id, label, attached}]
 
 TABS / ATTACH        (add --browser <id|label> when >1 browser is connected)
-  cdp-relay tabs
-  cdp-relay attach <tabId> [--events nav,net]     # default: nav (Page lifecycle)
-  cdp-relay detach <tabId>
-  cdp-relay events show <tabId>
-  cdp-relay events subscribe <tabId> <selectors>  # presets: nav / net / console
+  booey tabs
+  booey attach <tabId> [--events nav,net]     # default: nav (Page lifecycle)
+  booey detach <tabId>
+  booey events show <tabId>
+  booey events subscribe <tabId> <selectors>  # presets: nav / net / console
                                                  # or "Domain.method" / "Domain.*"
 
 INSPECT
-  cdp-relay eval <tabId> <js> [--await]
-  cdp-relay net <tabId> list [--filter <re>] [--since <seq>]
-  cdp-relay net <tabId> body <requestId>
-  cdp-relay net <tabId> clear
-  cdp-relay screenshot <tabId> [<path>]
-  cdp-relay nav <tabId> <url>
+  booey eval <tabId> <js> [--await]
+  booey net <tabId> list [--filter <re>] [--since <seq>]
+  booey net <tabId> body <requestId>
+  booey net <tabId> clear
+  booey screenshot <tabId> [<path>]
+  booey nav <tabId> <url>
 
 ESCAPE
-  cdp-relay send <tabId> <Method> [<params-json>]
+  booey send <tabId> <Method> [<params-json>]
 
 SETUP
-  cdp-relay ext path                       # where to point chrome://extensions "Load unpacked"
-  cdp-relay ext zip [<out.zip>]            # package extension/ for distribution
-  cdp-relay doctor                         # daemon / extension / protocol-version check
+  booey ext path                       # where to point chrome://extensions "Load unpacked"
+  booey ext zip [<out.zip>]            # package extension/ for distribution
+  booey doctor                         # daemon / extension / protocol-version check
 
 GLOBAL
   --browser <id|label>   target browser (optional when only one is connected;
-                         or env CDP_RELAY_BROWSER)
-  --port <N>             daemon port (default 9224; or env CDP_RELAY_PORT)
+                         or env BOOEY_BROWSER)
+  --port <N>             daemon port (default 9224; or env BOOEY_PORT)
   --pretty               pretty-print output (default JSON-line)
 `);
 }
@@ -639,6 +639,6 @@ if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
   printHelp();
   process.exit(0);
 }
-if (!(cmd in cmds)) fail(`unknown command: ${cmd}. Try: cdp-relay help`);
+if (!(cmd in cmds)) fail(`unknown command: ${cmd}. Try: booey help`);
 
 cmds[cmd]!().catch((e) => fail((e as Error)?.message || String(e)));
