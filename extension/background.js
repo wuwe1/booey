@@ -1,12 +1,11 @@
 // cdp-relay extension background — see ../docs/SPEC.md for protocol.
 //
-// Two consumers:
-//   1. daemon (WS at ws://127.0.0.1:<port>/ext) — primary, agent flow
-//   2. popup (chrome.runtime.onMessage) — fallback when daemon is dead
-//
-// chrome.debugger state is single source of truth; either consumer can attach.
-// Events from chrome.debugger.onEvent fan out to both: local buffer (for popup)
-// and WS push (for daemon).
+// The daemon (WS at ws://127.0.0.1:<port>/ext) is the sole debugger consumer: it
+// attaches tabs, subscribes events, and drives chrome.debugger. The popup is only
+// a status/identity panel — it reads the browser id, daemon connection state, and
+// event counters, and sets the label; it does not attach or inspect traffic (real
+// DevTools and the CLI do that better). Its messages are the small read-only API
+// at the bottom of this file.
 //
 // IDENTITY (multi-browser): this build is installed unchanged in every browser.
 // Each profile mints a persistent random id in chrome.storage.local on first run;
@@ -19,15 +18,6 @@ const PROTOCOL_VERSION = 6;
 const DEFAULT_PORT = 9224; // must match daemon/config.mjs; 9223 is the legacy v1 relay
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 15_000;
-const LOCAL_REQUEST_CAP = 500;
-// What the popup needs to draw its request list. The popup is an independent
-// consumer living in this process, so it is unioned with the daemon's set rather
-// than fighting over it.
-const POPUP_EVENTS = [
-  "Network.requestWillBeSent",
-  "Network.responseReceived",
-  "Network.loadingFailed",
-];
 const TABS_CHANGED_DEBOUNCE_MS = 150;
 const WS_BUFFER_LIMIT_BYTES = 4 * 1024 * 1024; // above this, shed events (never responses)
 
@@ -80,17 +70,16 @@ async function setLabel(label) {
 
 // ---- state ----
 const attachedTabs = new Set();        // tabId
-const localRequests = new Map();       // requestId -> {…} for popup
 let droppedEvents = 0;                 // events shed under WS backpressure
 let matchedEvents = 0;                 // events that passed the subscription filter
 let filteredEvents = 0;                // events dropped by the filter (the whole point)
 
 // ---- event subscriptions ----
 //
-// Per tab: the daemon's desired selectors, the popup's, and the compiled union.
-// Filtering happens in onEvent BEFORE any stringify, send, or store — an event
-// nobody subscribed to must cost nothing beyond the listener call itself.
-/** @type {Map<number, {daemon:string[], popup:string[], exact:Set<string>, wild:Set<string>, domains:Set<string>}>} */
+// Per tab: the daemon's desired selectors and the compiled match sets. Filtering
+// happens in onEvent BEFORE any stringify or send — an event nobody subscribed to
+// must cost nothing beyond the listener call itself.
+/** @type {Map<number, {daemon:string[], exact:Set<string>, wild:Set<string>, domains:Set<string>}>} */
 const subs = new Map();
 /** @type {Map<number, Set<string>>} tabId → CDP domains currently enabled on it */
 const enabledDomains = new Map();
@@ -98,7 +87,7 @@ const enabledDomains = new Map();
 function subFor(tabId) {
   let e = subs.get(tabId);
   if (!e) {
-    e = { daemon: [], popup: [], exact: new Set(), wild: new Set(), domains: new Set() };
+    e = { daemon: [], exact: new Set(), wild: new Set(), domains: new Set() };
     subs.set(tabId, e);
   }
   return e;
@@ -108,7 +97,7 @@ function compile(entry) {
   const exact = new Set();
   const wild = new Set();
   const domains = new Set();
-  for (const sel of [...entry.daemon, ...entry.popup]) {
+  for (const sel of entry.daemon) {
     const dot = sel.indexOf(".");
     const domain = sel.slice(0, dot);
     domains.add(domain);
@@ -437,41 +426,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     return;
   }
   matchedEvents++;
-  if (entry.daemon.length > 0) {
-    pushEventToDaemon({ type: "event", tabId, method, params, ...(sessionId ? { sessionId } : {}) });
-  }
-  if (entry.popup.length === 0) return;
-
-  if (method === "Network.requestWillBeSent") {
-    const r = {
-      requestId: params.requestId,
-      url: params.request.url,
-      method: params.request.method,
-      headers: params.request.headers,
-      postData: params.request.postData,
-      type: params.type,
-      ts: params.timestamp,
-      status: null,
-      mimeType: null,
-      responseHeaders: null,
-      tabId,
-    };
-    localRequests.set(params.requestId, r);
-    if (localRequests.size > LOCAL_REQUEST_CAP) {
-      const oldest = localRequests.keys().next().value;
-      localRequests.delete(oldest);
-    }
-  } else if (method === "Network.responseReceived") {
-    const r = localRequests.get(params.requestId);
-    if (r) {
-      r.status = params.response.status;
-      r.mimeType = params.response.mimeType;
-      r.responseHeaders = params.response.headers;
-    }
-  } else if (method === "Network.loadingFailed") {
-    const r = localRequests.get(params.requestId);
-    if (r) r.failed = params.errorText;
-  }
+  pushEventToDaemon({ type: "event", tabId, method, params, ...(sessionId ? { sessionId } : {}) });
 });
 
 chrome.debugger.onDetach.addListener((source, reason) => {
@@ -489,7 +444,10 @@ chrome.tabs.onUpdated.addListener((_id, changeInfo) => {
   if (changeInfo.url || changeInfo.title) pushTabsChanged();
 });
 
-// ---- popup message API (fallback) ----
+// ---- popup message API ----
+//
+// Read-only status + identity, plus the label setter and a manual reconnect. The
+// popup is not a debugger consumer; it never attaches tabs or sends CDP.
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
@@ -509,57 +467,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             wsState: ws ? ws.readyState : -1,
             wsConnected: !!(ws && ws.readyState === WebSocket.OPEN),
             port: daemonPort(),
+            version: PROTOCOL_VERSION,
             stoppedReconnecting,
           });
-          break;
-        case "list-tabs":
-          sendResponse({ tabs: await listTabsForDaemon() });
-          break;
-        case "attach": {
-          // The popup is its own subscriber: attaching from the popup turns on
-          // exactly what the popup's request list needs, and detaching or
-          // closing the popup is not required to give it back — the daemon's
-          // subscription is unaffected either way.
-          await attach(msg.tabId);
-          const entry = subFor(msg.tabId);
-          entry.popup = POPUP_EVENTS;
-          compile(entry);
-          sendResponse({ ok: true, ...(await reconcile(msg.tabId)) });
-          break;
-        }
-        case "detach":
-          await detach(msg.tabId);
-          sendResponse({ ok: true });
-          break;
-        case "send":
-          sendResponse({ ok: true, result: await sendCdp(msg.tabId, msg.method, msg.params) });
-          break;
-        case "list-requests":
-          sendResponse({ requests: [...localRequests.values()] });
-          break;
-        case "get-body":
-          sendResponse({
-            ok: true,
-            result: await sendCdp(msg.tabId, "Network.getResponseBody", { requestId: msg.requestId }),
-          });
-          break;
-        case "clear":
-          localRequests.clear();
-          sendResponse({ ok: true });
           break;
         case "status":
           sendResponse({
             attached: [...attachedTabs],
-            requestCount: localRequests.size,
             matchedEvents,
             filteredEvents,
             droppedEvents,
-            subscriptions: [...subs].map(([tabId, e]) => ({
-              tabId,
-              daemon: e.daemon,
-              popup: e.popup,
-              domains: [...e.domains],
-            })),
           });
           break;
         case "reconnect-daemon":

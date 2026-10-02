@@ -8,368 +8,163 @@
       --bg: #000;
       --bg-1: #0a0a0a;
       --bg-sel: #1a1100;
-      --bg-section: #241a04;
       --border: #2a2a2a;
-      --border-soft: #1a1a1a;
-      --border-section: #4a3308;
       --amber: #ff9f1a;
       --cyan: #00d2ff;
       --green: #3fff7d;
       --red: #ff4040;
-      --violet: #c084fc;
-      --orange: #ffb347;
       --fg: #e8e8e8;
-      --fg-2: #cccccc;
+      --fg-2: #ccc;
       --fg-3: #888;
       --fg-4: #666;
-      --fg-5: #444;
     }
 
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; }
     body {
-      width: 720px;
-      height: 560px;
+      width: 360px;
       background: var(--bg);
       color: var(--fg);
       font: 11px 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
     }
 
-    /* command bar */
-    .cmdbar {
-      height: 24px;
+    /* header */
+    .head {
+      height: 28px;
       background: var(--bg-1);
       border-bottom: 1px solid var(--amber);
       display: flex;
       align-items: center;
-      padding: 0 8px;
       gap: 8px;
-      font-size: 10px;
+      padding: 0 10px;
     }
-    .brand { color: var(--amber); font-weight: 700; letter-spacing: 0.06em; }
-    .sep { color: var(--fg-4); }
-    .daemon-pill { color: var(--fg-3); }
-    .daemon-pill .dot { color: var(--green); margin-right: 3px; }
-    .daemon-pill.offline .dot { color: var(--red); }
-    .daemon-pill.connecting .dot { color: var(--orange); }
-    .cmdbar button {
+    .brand { color: var(--amber); font-weight: 700; letter-spacing: 0.08em; }
+    .spacer { flex: 1; }
+    .pill { color: var(--fg-3); display: flex; align-items: center; gap: 4px; }
+    .pill .dot { color: var(--green); }
+    .pill.offline .dot, .pill.halted .dot { color: var(--red); }
+    .pill.connecting .dot { color: var(--amber); }
+    button {
       background: transparent;
       color: var(--amber);
       border: 1px solid var(--amber);
       font: inherit;
       font-size: 10px;
-      padding: 1px 8px;
+      padding: 2px 8px;
       cursor: pointer;
       letter-spacing: 0.04em;
     }
-    .cmdbar button:hover { background: var(--bg-sel); }
-    .cmdbar .spacer { flex: 1; }
+    button:hover { background: var(--bg-sel); }
 
-    /* identity bar */
-    .idbar {
-      height: 22px;
-      background: var(--bg-1);
-      border-bottom: 1px solid var(--border);
+    /* body rows */
+    .row {
       display: flex;
       align-items: center;
-      padding: 0 8px;
       gap: 8px;
-      font-size: 9.5px;
-      color: var(--fg-3);
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--border);
+      min-height: 30px;
     }
-    .idbar .label { color: var(--fg-4); letter-spacing: 0.05em; text-transform: uppercase; }
-    .idbar .id { color: var(--cyan); }
-    .idbar input {
+    .k {
+      color: var(--fg-4);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-size: 9.5px;
+      width: 66px;
+      flex-shrink: 0;
+    }
+    .v { color: var(--fg-2); }
+    .id {
+      color: var(--cyan);
+      cursor: pointer;
+      user-select: all;
+    }
+    .id:hover { color: #fff; }
+    .copied { color: var(--green); font-size: 9px; }
+
+    input {
+      flex: 1;
       background: var(--bg);
       border: 1px solid var(--border);
       color: var(--fg);
       font: inherit;
-      font-size: 10px;
-      padding: 1px 6px;
-      width: 140px;
-      outline: none;
-    }
-    .idbar input:focus { border-color: var(--amber); }
-    .idbar button {
-      background: transparent;
-      color: var(--amber);
-      border: 1px solid var(--amber);
-      font: inherit;
-      font-size: 9.5px;
-      padding: 1px 8px;
-      cursor: pointer;
-    }
-    .idbar button:hover { background: var(--bg-sel); }
-    .idbar .saved { color: var(--green); }
-
-    /* mode tabs */
-    .modetabs {
-      height: 18px;
-      background: var(--bg-1);
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      font-size: 9.5px;
-    }
-    .modetab {
-      padding: 0 10px;
-      line-height: 18px;
-      color: var(--fg-4);
-      border-right: 1px solid var(--border);
-      cursor: pointer;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-    }
-    .modetab.active { background: var(--bg-sel); color: var(--amber); }
-    .modetab:hover:not(.active) { color: var(--fg-2); }
-
-    /* section bar */
-    .secbar {
-      height: 16px;
-      background: var(--bg-section);
-      border-top: 1px solid var(--border-section);
-      border-bottom: 1px solid var(--border-section);
-      color: var(--amber);
-      font-size: 9.5px;
-      padding: 0 8px;
-      line-height: 16px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      font-weight: 600;
-    }
-    .secbar input {
-      flex: 1;
-      background: transparent;
-      border: 0;
-      color: var(--fg-2);
-      font: inherit;
-      font-size: 10px;
-      letter-spacing: 0;
-      text-transform: none;
-      font-weight: 400;
-      outline: none;
-    }
-    .secbar input::placeholder { color: var(--fg-4); }
-
-    /* column header */
-    .colhdr {
-      display: grid;
-      grid-template-columns: 50px 38px 1fr 56px;
-      gap: 6px;
-      padding: 0 8px;
-      height: 16px;
-      align-items: center;
-      background: var(--bg-1);
-      border-bottom: 1px solid var(--border);
-      color: var(--fg-4);
-      font-size: 9px;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-    }
-
-    /* network list */
-    #list {
-      flex: 1;
-      overflow: auto;
-      min-height: 80px;
-    }
-    .nrow {
-      display: grid;
-      grid-template-columns: 50px 38px 1fr 56px;
-      gap: 6px;
-      padding: 0 8px;
-      height: 18px;
-      align-items: center;
-      border-bottom: 1px solid var(--border-soft);
-      font-size: 10px;
-      cursor: pointer;
-      border-left: 2px solid transparent;
-    }
-    .nrow:hover { background: #111; }
-    .nrow.selected { background: var(--bg-sel); border-left-color: var(--amber); }
-    .nrow.selected .url { color: #fff; }
-    .url { color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .size { color: var(--fg-3); text-align: right; }
-
-    .m-GET { color: var(--cyan); }
-    .m-POST { color: var(--green); }
-    .m-PUT, .m-PATCH { color: var(--orange); }
-    .m-DELETE { color: var(--red); }
-    .m-OPTIONS { color: var(--violet); }
-    .m-HEAD { color: var(--fg-3); }
-
-    .s-2xx { color: var(--green); }
-    .s-3xx { color: var(--orange); }
-    .s-4xx, .s-5xx { color: var(--red); }
-    .s-pending { color: var(--cyan); }
-    .s-err { color: var(--red); }
-
-    /* detail */
-    #detail-area {
-      height: 180px;
-      display: flex;
-      flex-direction: column;
-      border-top: 1px solid var(--border);
-    }
-    #detail-text {
-      flex: 1;
-      width: 100%;
-      background: var(--bg);
-      color: var(--fg-2);
-      border: 0;
-      padding: 6px 8px;
-      font: inherit;
-      font-size: 10.5px;
-      resize: none;
-      outline: none;
-      white-space: pre;
-      overflow: auto;
-    }
-
-    /* eval pane */
-    .pane { display: none; flex: 1; flex-direction: column; overflow: hidden; }
-    .pane.active { display: flex; }
-    #eval-input {
-      flex: 1;
-      background: var(--bg);
-      color: var(--fg);
-      border: 0;
-      padding: 6px 8px;
-      font: inherit;
       font-size: 11px;
-      resize: none;
+      padding: 2px 6px;
       outline: none;
+      min-width: 0;
     }
-    #eval-out {
-      flex: 1;
-      margin: 0;
-      padding: 6px 8px;
-      background: var(--bg);
-      color: var(--green);
-      font: inherit;
-      font-size: 10.5px;
-      overflow: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
-      border-top: 1px solid var(--border);
+    input:focus { border-color: var(--amber); }
+    .saved { color: var(--green); font-size: 9px; }
+
+    /* warning banner (version mismatch / halted) */
+    .warn {
+      display: none;
+      padding: 7px 10px;
+      background: #2a0a0a;
+      border-bottom: 1px solid var(--red);
+      color: var(--red);
+      font-size: 10px;
+      line-height: 1.4;
     }
-    .eval-opts {
-      height: 18px;
-      padding: 0 8px;
+    .warn.show { display: block; }
+
+    /* counters */
+    .counters {
       display: flex;
-      align-items: center;
-      gap: 12px;
-      font-size: 9.5px;
-      color: var(--fg-3);
-      background: var(--bg-1);
-      border-bottom: 1px solid var(--border);
-      letter-spacing: 0.05em;
+      padding: 8px 10px;
+      gap: 0;
+    }
+    .counter { flex: 1; text-align: center; }
+    .counter .n { font-size: 15px; color: var(--fg); }
+    .counter.filtered .n { color: var(--fg-3); }
+    .counter.dropped .n { color: var(--amber); }
+    .counter .lbl {
+      display: block;
+      color: var(--fg-4);
+      font-size: 8.5px;
       text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-top: 2px;
     }
-    .eval-opts label { cursor: pointer; }
-    .eval-opts input[type=checkbox] { accent-color: var(--amber); margin: 0 4px 0 0; vertical-align: middle; }
-
-    /* status footer */
-    .footer {
-      height: 18px;
-      background: var(--bg-1);
-      border-top: 1px solid var(--border);
-      padding: 0 8px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      color: var(--fg-3);
-      font-size: 9.5px;
-    }
-    .footer .label { color: var(--fg-4); letter-spacing: 0.05em; text-transform: uppercase; }
-    .footer .value { color: var(--fg-2); }
-    .footer .last { flex: 1; text-align: right; color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-    /* scrollbars */
-    ::-webkit-scrollbar { width: 8px; height: 8px; }
-    ::-webkit-scrollbar-thumb { background: var(--fg-5); }
-    ::-webkit-scrollbar-track { background: var(--bg); }
   </style>
 </head>
 <body>
-  <!-- COMMAND BAR -->
-  <div class="cmdbar">
+  <div class="head">
     <span class="brand">CDP-RELAY</span>
-    <span class="sep">│</span>
-    <span class="daemon-pill" id="daemon-pill"><span class="dot">●</span><span id="daemon-state">offline</span> :<span id="daemon-port">9224</span></span>
-    <button id="reconnect" title="reconnect to daemon">⟳ RECON</button>
-    <span class="sep">│</span>
-    <button id="attach">⟨A⟩ ATTACH</button>
-    <button id="detach">DETACH</button>
-    <button id="clear">CLR</button>
     <span class="spacer"></span>
-    <span id="attach-status" class="daemon-pill"><span class="dot" style="color:var(--fg-5)">●</span>not attached</span>
+    <span class="pill offline" id="daemon-pill">
+      <span class="dot">●</span><span id="daemon-state">offline</span>
+      <span style="color:var(--fg-4)">:</span><span id="daemon-port">9224</span>
+    </span>
+    <button id="reconnect" title="reconnect to daemon">⟳</button>
   </div>
 
-  <!-- IDENTITY BAR -->
-  <div class="idbar">
-    <span class="label">Browser</span>
-    <span class="id" id="browser-id" title="persistent per-profile id">…</span>
-    <span class="sep">│</span>
-    <span class="label">Label</span>
+  <div class="warn" id="warn"></div>
+
+  <div class="row">
+    <span class="k">Browser</span>
+    <span class="v id" id="browser-id" title="click to copy full id">…</span>
+    <span class="copied" id="id-copied"></span>
+  </div>
+
+  <div class="row">
+    <span class="k">Label</span>
     <input id="label-input" placeholder="e.g. shopee-A" maxlength="64" />
-    <button id="save-label">SAVE</button>
     <span class="saved" id="label-saved"></span>
   </div>
 
-  <!-- MODE TABS -->
-  <div class="modetabs">
-    <div class="modetab active" data-pane="net">1·NET·<span id="net-count">0</span></div>
-    <div class="modetab" data-pane="eval">2·EVAL</div>
+  <div class="row">
+    <span class="k">Protocol</span>
+    <span class="v" id="proto">v—</span>
+    <span class="spacer"></span>
+    <span class="k" style="width:auto">Attached</span>
+    <span class="v" id="attached">0</span>
   </div>
 
-  <!-- NET PANE -->
-  <div class="pane active" id="pane-net" style="display:flex">
-    <div class="secbar">
-      <span>⟦N⟧ NETWORK</span>
-      <span class="sep">│</span>
-      <span style="color:var(--fg-4)">filter:</span>
-      <input id="filter" placeholder="substring (e.g. product/list)" />
-    </div>
-    <div class="colhdr">
-      <span>METHOD</span>
-      <span>STAT</span>
-      <span>URL</span>
-      <span style="text-align:right">SIZE</span>
-    </div>
-    <div id="list"></div>
-    <div class="secbar" style="display:flex"><span>⟦D⟧ DETAIL</span><span class="sep">│</span><span id="detail-summary" style="color:var(--fg-3); font-weight:400; text-transform:none; letter-spacing:0">(click a row)</span></div>
-    <div id="detail-area">
-      <textarea id="detail-text" readonly placeholder="—"></textarea>
-    </div>
-  </div>
-
-  <!-- EVAL PANE -->
-  <div class="pane" id="pane-eval">
-    <div class="secbar"><span>⟦E⟧ EVAL · RUNTIME.EVALUATE</span></div>
-    <div class="eval-opts">
-      <label><input type="checkbox" id="eval-await" checked />awaitPromise</label>
-      <span class="sep">│</span>
-      <span style="color:var(--fg-4)">⟨↵⟩ RUN</span>
-    </div>
-    <textarea id="eval-input" placeholder="document.title&#10;fetch('/api/...').then(r=>r.json())"></textarea>
-    <div class="secbar"><span>⟦R⟧ RESULT</span></div>
-    <pre id="eval-out"></pre>
-  </div>
-
-  <!-- FOOTER -->
-  <div class="footer">
-    <span class="label">DAEMON</span><span id="footer-daemon" class="value">—</span>
-    <span class="sep">│</span>
-    <span class="label">ATTACHED</span><span id="footer-attached" class="value">0</span>
-    <span class="sep">│</span>
-    <span class="label">REQS</span><span id="footer-reqs" class="value">0</span>
-    <span class="last" id="footer-last">—</span>
+  <div class="counters" title="events, since this service worker started">
+    <div class="counter"><span class="n" id="c-matched">0</span><span class="lbl">matched</span></div>
+    <div class="counter filtered"><span class="n" id="c-filtered">0</span><span class="lbl">filtered</span></div>
+    <div class="counter dropped"><span class="n" id="c-dropped">0</span><span class="lbl">dropped</span></div>
   </div>
 
   <script src="popup.js"></script>

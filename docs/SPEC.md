@@ -66,8 +66,9 @@ off by default: it exists to deliver console events, and **`Runtime.evaluate`
 does not need the domain enabled**.
 
 **Ownership is per tab, last writer wins.** No refcounting — a tab already has a
-single owner for focus, navigation, and dialogs. The extension unions the
-daemon's set with the popup's, since those are genuinely separate consumers.
+single owner for focus, navigation, and dialogs, and the daemon is the only event
+subscriber (the popup is a status panel, not a consumer): each `events.set`
+replaces the tab's subscription wholesale.
 
 **Validation.** A malformed selector or unknown preset is a 400. A well-shaped
 selector naming a domain that does not exist (`Netwrok.*`) can only be caught by
@@ -574,7 +575,7 @@ cdp-relay/
 │   ├── background.js     # identity + daemon WS client + chrome.debugger bridge
 │   ├── offscreen-heartbeat.{html,js}  # SW keep-alive Port
 │   ├── popup.html
-│   └── popup.js          # debug fallback + label editor
+│   └── popup.js          # status / identity panel (daemon state, counters, label editor)
 └── cli/cdp-relay.ts      # entry; subcommands
 ```
 
