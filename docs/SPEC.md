@@ -534,6 +534,24 @@ await relay.attach(tab.tabId, { events: ["net"] });
 const title = await relay.evalFn(tab.tabId, () => document.title);
 ```
 
+### Embedding the daemon
+
+The daemon can run in-process instead of as a separate `node daemon/server.ts`
+process — a consumer that is the daemon's only caller can skip the standalone
+process (and its PID/port management) entirely:
+
+```ts
+import { createDaemon } from "@wuwe1/cdp-relay/daemon";
+const daemon = await createDaemon({ port: 9224 });   // resolves once listening
+// ... talk to 127.0.0.1:9224 as usual (RelayClient, CLI, raw HTTP) ...
+await daemon.close();                                 // frees the port
+```
+
+`createDaemon` installs no signal handlers and never calls `process.exit`; it
+rejects on `EADDRINUSE`. The extension still connects over the `/ext` WS, so the
+embedding process hosts that port — embedding removes the separate process, not
+the port. `daemon/server.ts` is the thin standalone entry built on this.
+
 ## File structure
 
 ```
@@ -548,7 +566,8 @@ cdp-relay/
 │   ├── page-model.ts     # three trees → NodeRecord[] → indexedText + selectorMap
 │   ├── actions.ts        # the closed action vocabulary + its metadata
 │   ├── registry.ts       # ExtRegistry: Map<id,ExtConn> + selector resolution
-│   ├── server.ts         # HTTP + WS bootstrap, thin router
+│   ├── create.ts         # createDaemon(): embeddable daemon (router + WS + heartbeat)
+│   ├── server.ts         # standalone entry: port/signals/exit over createDaemon
 │   └── test-mock-ext.ts  # protocol test double (multi-instance)
 ├── extension/            # plain JS, shipped uncompiled
 │   ├── manifest.json

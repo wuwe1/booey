@@ -52,7 +52,8 @@ daemon/
   ring-buffer.ts   O(1) fixed-capacity FIFO (event cache)
   ext-conn.ts      ExtConn — one browser: serial scheduler + attach + event cache
   registry.ts      ExtRegistry — Map<id,ExtConn> + selector (id|label) resolution
-  server.ts        HTTP + WS bootstrap; thin router that delegates to ExtConn
+  create.ts        createDaemon(): the embeddable daemon (router + WS + heartbeat)
+  server.ts        standalone entry; port/signals/exit over createDaemon
   test-mock-ext.ts protocol test double; pass id/label to simulate a browser
 extension/          MV3: background.js (identity + WS client + debugger bridge),
                     offscreen-heartbeat.{html,js}, popup.{html,js}, manifest.json

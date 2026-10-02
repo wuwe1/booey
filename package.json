@@ -27,8 +27,8 @@
       "default": "./dist/clients/ts/index.js"
     },
     "./daemon": {
-      "types": "./dist/daemon/server.d.ts",
-      "default": "./dist/daemon/server.js"
+      "types": "./dist/daemon/create.d.ts",
+      "default": "./dist/daemon/create.js"
     },
     "./mock-ext": {
       "types": "./dist/daemon/test-mock-ext.d.ts",
@@ -53,7 +53,7 @@
     "test": "node test/integration.mjs && node test/client.mjs && node test/compat-lilto.mjs",
     "test:compat": "node test/compat-lilto.mjs",
     "test:client": "node test/client.mjs",
-    "test:unit": "node --test test/page-model.test.ts test/actions.test.ts",
+    "test:unit": "node --test test/page-model.test.ts test/actions.test.ts test/create-daemon.test.ts",
     "test:pack": "node test/pack.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
