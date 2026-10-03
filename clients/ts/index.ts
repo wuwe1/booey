@@ -682,35 +682,219 @@ export class RelayClient {
   /**
    * Wait until the page stops changing — no dirtying event for `quietMs`.
    *
-   * This is the honest version of `sleep(3000)` after a click. It watches CDP
-   * events, which come from the browser process, so it keeps working in a
-   * background tab where page timers are throttled to death and any in-page
-   * polling would stall.
+   * This is a correct replacement for `sleep(3000)` after a click. It watches CDP
+   * events on the browser-process side, so it keeps working in a background tab
+   * where in-page timers are throttled almost to a stop.
    *
-   * Returns `quiet: false` if `timeoutMs` ran out while the page was still
-   * churning — a page that never settles is a real answer, not an error.
+   * With `net: true` it also waits for network quiet — no new `Network.*` event
+   * for `quietMs` — which catches an async fetch that does not bump the revision.
+   * That needs the tab subscribed to `net` first (subscriptions are not
+   * retroactive); if it is not, this throws.
+   *
+   * Returns `quiet: false` if `timeoutMs` ran out while the page still changed. A
+   * page that never settles is a real answer, not an error.
    */
   async settled(
     tabId: number,
-    opts: { quietMs?: number; timeoutMs?: number; pollMs?: number } = {},
+    opts: { quietMs?: number; timeoutMs?: number; pollMs?: number; net?: boolean } = {},
   ): Promise<{ revision: number; quiet: boolean }> {
     const quietMs = opts.quietMs ?? 500;
     const timeoutMs = opts.timeoutMs ?? 10_000;
     const pollMs = opts.pollMs ?? 100;
+    const watchNet = opts.net ?? false;
+    if (watchNet) await this._requireNet(tabId);
     const deadline = Date.now() + timeoutMs;
     let last = await this.revision(tabId);
+    // Start the net cursor at "now" so only events after this call count.
+    let netSince = watchNet ? (await this.readEvents(tabId, {})).nextSeq : 0;
     let lastChange = Date.now();
     while (Date.now() < deadline) {
       await sleep(pollMs);
+      let changed = false;
       const current = await this.revision(tabId);
       if (current !== last) {
         last = current;
+        changed = true;
+      }
+      if (watchNet) {
+        const page = await this.readEvents(tabId, { since: netSince, filter: /^Network\./ });
+        netSince = page.nextSeq;
+        if (page.events.length > 0) changed = true;
+      }
+      if (changed) {
         lastChange = Date.now();
         continue;
       }
       if (Date.now() - lastChange >= quietMs) return { revision: last, quiet: true };
     }
     return { revision: last, quiet: false };
+  }
+
+  /**
+   * Wait until a selector matches in the page, then return `true`.
+   *
+   * It polls `document.querySelector` in the page. With `visible: true` it also
+   * requires a non-zero box, so it waits for a rendered element and not just an
+   * element in the DOM. It throws a `RelayError` with code `TIMEOUT` if the
+   * selector does not match within `timeoutMs` — a slow page may work on a retry.
+   */
+  async waitForSelector(
+    tabId: number,
+    selector: string,
+    opts: { timeoutMs?: number; pollMs?: number; visible?: boolean } = {},
+  ): Promise<true> {
+    const timeoutMs = opts.timeoutMs ?? 5_000;
+    const pollMs = opts.pollMs ?? 100;
+    const visible = opts.visible ?? false;
+    const deadline = Date.now() + timeoutMs;
+    // Built as a string so the page globals (`document`) are not TS-checked here.
+    const expr =
+      `(() => { const el = document.querySelector(${JSON.stringify(selector)});` +
+      ` if (!el) return false; if (!${visible}) return true;` +
+      ` const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; })()`;
+    while (Date.now() < deadline) {
+      const found = await this.eval<boolean>(tabId, expr);
+      if (found) return true;
+      await sleep(pollMs);
+    }
+    throw new RelayError(`waitForSelector timed out: ${selector}`, "TIMEOUT", true);
+  }
+
+  /**
+   * Wait for the first network response whose URL matches, then return its body.
+   *
+   * This reads the event cache, so the tab must be subscribed to `net` before the
+   * request happens (subscriptions are not retroactive); if it is not, this
+   * throws. It matches on `Network.loadingFinished`, the point at which the body
+   * buffer is ready, joined to the request's URL by `requestId`. The body comes
+   * from `Network.getResponseBody`; `json` is set when the body parses as JSON.
+   *
+   * For a page whose data arrives over an API, this is more durable than reading
+   * the rendered DOM: the API shape outlives a visual redesign.
+   */
+  async waitForResponse(
+    tabId: number,
+    urlRe: RegExp,
+    opts: { timeoutMs?: number; pollMs?: number; since?: number } = {},
+  ): Promise<CapturedResponse> {
+    await this._requireNet(tabId);
+    const timeoutMs = opts.timeoutMs ?? 10_000;
+    const pollMs = opts.pollMs ?? 100;
+    const deadline = Date.now() + timeoutMs;
+    let since = opts.since ?? 0;
+    const records = new Map<string, NetRecord>();
+    while (Date.now() < deadline) {
+      const page = await this.readEvents(tabId, { since });
+      since = page.nextSeq;
+      collectNetRecords(page.events, records);
+      const hit = matchFinishedResponses(records, urlRe)[0];
+      if (hit) return await this._fetchBody(tabId, hit);
+      await sleep(pollMs);
+    }
+    throw new RelayError(`waitForResponse timed out for ${urlRe}`, "TIMEOUT", true);
+  }
+
+  /**
+   * Collect every matching network response until the page goes network-quiet for
+   * `settleMs` (or until `timeoutMs`). Each entry carries its body. Use it to grab
+   * a burst of API calls a page makes while it loads.
+   */
+  async captureResponses(
+    tabId: number,
+    urlRe: RegExp,
+    opts: { settleMs?: number; timeoutMs?: number; pollMs?: number; since?: number } = {},
+  ): Promise<CapturedResponse[]> {
+    await this._requireNet(tabId);
+    const settleMs = opts.settleMs ?? 1_000;
+    const timeoutMs = opts.timeoutMs ?? 15_000;
+    const pollMs = opts.pollMs ?? 100;
+    const deadline = Date.now() + timeoutMs;
+    let since = opts.since ?? 0;
+    const records = new Map<string, NetRecord>();
+    const done = new Set<string>();
+    const out: CapturedResponse[] = [];
+    let lastHit = Date.now();
+    while (Date.now() < deadline) {
+      const page = await this.readEvents(tabId, { since });
+      since = page.nextSeq;
+      collectNetRecords(page.events, records);
+      for (const rec of matchFinishedResponses(records, urlRe)) {
+        if (done.has(rec.requestId)) continue;
+        done.add(rec.requestId);
+        out.push(await this._fetchBody(tabId, rec));
+        lastHit = Date.now();
+      }
+      if (Date.now() - lastHit >= settleMs) break;
+      await sleep(pollMs);
+    }
+    return out;
+  }
+
+  /**
+   * Attach a tab, run `fn`, and detach afterwards — but only detach if this call
+   * attached it. If the tab was already attached, leave it as found. `target` is a
+   * URL regex (found, or opened when `openUrl` is set), a tabId, or a TabInfo.
+   */
+  async withTab<T>(
+    target: RegExp | number | TabInfo,
+    fn: (tab: TabInfo) => Promise<T>,
+    opts: { events?: EventSelector[]; sessions?: boolean; openUrl?: string } = {},
+  ): Promise<T> {
+    const tab = await this._resolveTab(target, opts.openUrl);
+    const wasAttached = (await this.page(tab.tabId).catch(() => null))?.attached ?? false;
+    await this.attach(tab.tabId, { events: opts.events, sessions: opts.sessions });
+    try {
+      return await fn(tab);
+    } finally {
+      if (!wasAttached) await this.detach(tab.tabId).catch(() => {});
+    }
+  }
+
+  private async _resolveTab(target: RegExp | number | TabInfo, openUrl?: string): Promise<TabInfo> {
+    if (typeof target === "number") {
+      const found = (await this.tabs({ fresh: false })).find((t) => t.tabId === target);
+      return found ?? { tabId: target, url: "", title: "" };
+    }
+    if (target instanceof RegExp) {
+      return openUrl ? await this.findOrOpenTab(target, openUrl) : await this.findTab(target);
+    }
+    return target;
+  }
+
+  private async _requireNet(tabId: number): Promise<void> {
+    const subs = await this.subscription(tabId);
+    if (!subs.some((s) => s.startsWith("Network")))
+      throw new RelayError(
+        `tab ${tabId} is not subscribed to Network; subscribe "net" first (subscriptions are not retroactive)`,
+        "BAD_REQUEST",
+        false,
+      );
+  }
+
+  private async _fetchBody(tabId: number, rec: NetRecord): Promise<CapturedResponse> {
+    const r = await this.cdp<{ body: string; base64Encoded: boolean }>(
+      tabId,
+      "Network.getResponseBody",
+      { requestId: rec.requestId },
+    );
+    let json: unknown;
+    if (!r.base64Encoded) {
+      try {
+        json = JSON.parse(r.body);
+      } catch {
+        /* not JSON; leave json undefined */
+      }
+    }
+    return {
+      requestId: rec.requestId,
+      url: rec.url ?? "",
+      method: rec.method ?? "",
+      status: rec.status ?? 0,
+      mimeType: rec.mimeType ?? "",
+      body: r.body,
+      base64Encoded: r.base64Encoded,
+      ...(json === undefined ? {} : { json }),
+    };
   }
 
   // ---- escape hatch ----
@@ -987,4 +1171,120 @@ export class BooeyAgent {
     if (cache && summary.allOk) await cache.set(key, actions);
     return { ok: summary.allOk, results, actions, fromCache: false, reinferred: true, summary };
   }
+}
+
+// ---- L1 ergonomics: network capture ----
+
+/** A captured network response, with its body (and `json` when it parses). */
+export interface CapturedResponse {
+  requestId: string;
+  url: string;
+  method: string;
+  status: number;
+  mimeType: string;
+  body: string;
+  json?: unknown;
+  base64Encoded: boolean;
+}
+
+/** What we fold the per-request `Network.*` events into. */
+export interface NetRecord {
+  requestId: string;
+  url?: string;
+  method?: string;
+  status?: number;
+  mimeType?: string;
+  finished?: boolean;
+  failed?: boolean;
+}
+
+/**
+ * Fold a batch of `Network.*` events into per-request records, keyed by
+ * requestId. `requestWillBeSent` gives the URL and method; `responseReceived`
+ * gives the status and MIME type; `loadingFinished` marks the body as ready;
+ * `loadingFailed` marks a failure. Pass the same `into` map across polls to
+ * accumulate. Pure, so it is unit-tested directly.
+ */
+export function collectNetRecords(
+  events: RelayEvent[],
+  into: Map<string, NetRecord> = new Map(),
+): Map<string, NetRecord> {
+  for (const e of events) {
+    const p = e.params as any;
+    const requestId: string | undefined = p?.requestId;
+    if (!requestId) continue;
+    const rec = into.get(requestId) ?? { requestId };
+    if (e.method === "Network.requestWillBeSent") {
+      rec.url = p.request?.url ?? rec.url;
+      rec.method = p.request?.method ?? rec.method;
+    } else if (e.method === "Network.responseReceived") {
+      rec.status = p.response?.status ?? rec.status;
+      rec.mimeType = p.response?.mimeType ?? rec.mimeType;
+      rec.url = p.response?.url ?? rec.url;
+    } else if (e.method === "Network.loadingFinished") {
+      rec.finished = true;
+    } else if (e.method === "Network.loadingFailed") {
+      rec.failed = true;
+    }
+    into.set(requestId, rec);
+  }
+  return into;
+}
+
+/** Finished records whose URL matches, in requestId insertion order. */
+export function matchFinishedResponses(
+  records: Map<string, NetRecord>,
+  urlRe: RegExp,
+): NetRecord[] {
+  return [...records.values()].filter((r) => r.finished && r.url != null && urlRe.test(r.url));
+}
+
+// ---- L2 ergonomics: snapshot queries (deterministic, no LLM) ----
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Every node that matches the predicate. */
+export function findNodes(snap: Snapshot, pred: (n: NodeRecord) => boolean): NodeRecord[] {
+  return snap.nodes.filter(pred);
+}
+
+/** The first node that matches the predicate, or undefined. */
+export function findNode(snap: Snapshot, pred: (n: NodeRecord) => boolean): NodeRecord | undefined {
+  return snap.nodes.find(pred);
+}
+
+/** Nodes with this AX role; narrow further by accessible name (string = substring). */
+export function nodesByRole(snap: Snapshot, role: string, name?: string | RegExp): NodeRecord[] {
+  const re = name == null ? null : name instanceof RegExp ? name : new RegExp(escapeRegExp(name));
+  return snap.nodes.filter((n) => n.role === role && (re == null || re.test(n.name)));
+}
+
+/**
+ * Nodes whose accessible name matches (string = substring). The name is the AX
+ * accessible name — the closest proxy to visible text a NodeRecord carries; it is
+ * not the raw `textContent`.
+ */
+export function nodesByText(snap: Snapshot, text: string | RegExp): NodeRecord[] {
+  const re = text instanceof RegExp ? text : new RegExp(escapeRegExp(text));
+  return snap.nodes.filter((n) => re.test(n.name));
+}
+
+/** Only the interactive nodes (clickable, typable, and so on). */
+export function interactiveNodes(snap: Snapshot): NodeRecord[] {
+  return snap.nodes.filter((n) => n.int);
+}
+
+/**
+ * Nodes that are new since the previous snapshot — the ones `indexedText` marks
+ * with a leading `*`. Useful to see what a click revealed.
+ */
+export function newNodes(snap: Snapshot): NodeRecord[] {
+  const out: NodeRecord[] = [];
+  for (const m of snap.indexedText.matchAll(/^\s*\*\[(\d+)\]/gm)) {
+    const node = snap.selectorMap[Number(m[1])];
+    if (node) out.push(node);
+  }
+  return out;
 }

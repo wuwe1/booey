@@ -566,6 +566,32 @@ await relay.attach(tab.tabId, { events: ["net"] });
 const title = await relay.evalFn(tab.tabId, () => document.title);
 ```
 
+### Ergonomic helpers
+
+`clients/ts` adds thin helpers over L1 and L2. They are client-side only; the
+daemon does not change.
+
+- `relay.withTab(target, fn, {events?})` — attach the tab, run `fn`, and detach.
+  It detaches only a tab it attached itself; it leaves a pre-attached tab as
+  found. `target` is a URL regex, a tabId, or a `TabInfo`.
+- `relay.waitForSelector(tabId, selector, {timeoutMs?, visible?})` — poll the page
+  until the selector matches (and has a non-zero box when `visible`). It throws a
+  `RelayError` with code `TIMEOUT` if it does not match in time.
+- `relay.settled(tabId, {quietMs?, net?})` — wait until the page is quiet. With
+  `net: true` it also waits for no new `Network.*` event for `quietMs`, which needs
+  the tab subscribed to `net` first.
+- `relay.waitForResponse(tabId, urlRe, {timeoutMs?})` — resolve with the first
+  response whose URL matches, body included (`json` set when it parses). It reads
+  the event cache, so subscribe to `net` before the request fires. It matches on
+  `Network.loadingFinished` (when the body buffer is ready), joined to the URL by
+  `requestId`. For an API-driven page this is more durable than the rendered DOM.
+- `relay.captureResponses(tabId, urlRe, {settleMs?})` — collect every matching
+  response until the page is network-quiet for `settleMs`.
+- L2 queries over a `Snapshot`, for deterministic reads with no LLM:
+  `nodesByRole`, `nodesByText`, `interactiveNodes`, `newNodes`, `findNode`,
+  `findNodes`. `collectNetRecords` / `matchFinishedResponses` are the net-capture
+  primitives, exported for reuse.
+
 ### The agent loop (`relay.agent`)
 
 For the L3 action flow, `relay.agent({ llm, cache })` wraps the whole

@@ -144,6 +144,21 @@ const page = await relay.readEvents(tab.tabId, { filter: /responseReceived/ });
 if (page.truncated) console.warn(`lost ${page.dropped} events`);
 ```
 
+For data extraction, thin L1/L2 helpers remove the boilerplate. `withTab` attaches
+and detaches for you; `waitForResponse` grabs an API body (more durable than the
+rendered DOM); `waitForSelector` and `settled({net})` wait for the data to arrive:
+
+```ts
+const data = await relay.withTab(/seller\.shopee/, async (tab) => {
+  await relay.subscribe(tab.tabId, ["net"]);          // subscribe before the request
+  const r = await relay.waitForResponse(tab.tabId, /\/api\/product\/list/);
+  return r.json;                                       // parsed body
+}, { openUrl: "https://seller.shopee.tw/" });
+```
+
+Over a `Snapshot`, `nodesByRole` / `nodesByText` / `interactiveNodes` / `newNodes`
+query the page model directly, for deterministic reads with no LLM.
+
 Failures split three ways: `PageJsError` (the page's JS threw), `RelayError` with
 `.code` and `.retriable` (transport / daemon / debugger), and a plain resolved
 value. Branch on `.code`, never on the message text.

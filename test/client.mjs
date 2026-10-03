@@ -363,6 +363,48 @@ try {
     chkc("...names the budget it used, not the daemon default", e.message, "200ms");
     chk("...classified as a connection failure", isRelayConnectionFailure(e), true);
   }
+  // ---- L1 ergonomics: network capture + waits (single browser, tab 1001) ----
+  await relay.subscribe(1001, ["net"]); // mock re-emits its net burst on a sub change
+  const resp = await relay.waitForResponse(1001, /get_product_extensive_info/, { timeoutMs: 3000 });
+  chk("waitForResponse matches the api url", /get_product_extensive_info/.test(resp.url), true);
+  chk("...carries status", resp.status, 200);
+  chk("...body parsed as json", resp.json?.code, 0);
+
+  const captured = await relay.captureResponses(1001, /get_product_extensive_info/, {
+    settleMs: 400,
+    timeoutMs: 3000,
+  });
+  chk("captureResponses collects the matching call", captured.length >= 1, true);
+
+  chk(
+    "waitForSelector resolves",
+    await relay.waitForSelector(1001, ".price", { timeoutMs: 2000 }),
+    true,
+  );
+
+  const s = await relay.settled(1001, { quietMs: 300, timeoutMs: 3000, net: true });
+  chk("settled({net}) goes quiet", s.quiet, true);
+
+  await relay.subscribe(1001, ["nav"]); // drop Network
+  try {
+    await relay.waitForResponse(1001, /x/, { timeoutMs: 500 });
+    chk("waitForResponse without net subscription throws", false, true);
+  } catch (e) {
+    chk("...code BAD_REQUEST (subscribe net first)", e.code, "BAD_REQUEST");
+  }
+
+  // ---- withTab: attach, run, and detach only what it attached ----
+  let gotTab = 0;
+  await relay.withTab(1001, async (t) => {
+    gotTab = t.tabId;
+  });
+  chk("withTab passes the tab to fn", gotTab, 1001);
+  chk("withTab leaves a pre-attached tab attached", (await relay.page(1001)).attached, true);
+
+  await relay.detach(1001);
+  await relay.withTab(1001, async () => {});
+  chk("withTab detaches a tab it attached itself", (await relay.page(1001)).attached, false);
+
   const twoBrowsers = new RelayClient({ base: `http://127.0.0.1:${PORT}` });
   spawnNode(["daemon/test-mock-ext.ts", String(PORT), "browser-B", "shopee-B"]);
   await pollUntil(async () => (await twoBrowsers.browsers()).length === 2);

@@ -184,7 +184,7 @@ is optional.
 
 ## Testing
 
-`npm test` runs three suites in order. Expect `PASS=55` (protocol), `PASS=83`
+`npm test` runs three suites in order. Expect `PASS=55` (protocol), `PASS=93`
 (client), and `PASS=16` (lilto compat), all with `FAIL=0` and exit 0.
 `npm run test:pack` is separate (`PASS=13`) because it builds a tarball — see
 Distribution. `npm run test:unit` runs the pure-function unit tests.
