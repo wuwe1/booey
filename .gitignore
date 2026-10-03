@@ -7,4 +7,5 @@ dist/
 *.tgz
 *.log
 .DS_Store
-cdp-relay-ext.zip
+# extension zips: `booey ext zip` (booey-ext-*.zip) and the release workflow (booey-extension-*.zip)
+booey-ext*.zip
