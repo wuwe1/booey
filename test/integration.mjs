@@ -331,6 +331,15 @@ try {
   chkc("CLI eval A", cli("eval", "1001", "x", "--browser", "shopee-A"), "shopee-A (mock)");
   chkc("CLI browsers lists B", cli("browsers"), "shopee-B");
 
+  // CLI L2/L3: snapshot prints the indexed text; act runs against the cached one.
+  chkc(
+    "CLI snapshot prints indexed text",
+    cli("snapshot", "1001", "--browser", "shopee-A"),
+    "<button",
+  );
+  chkc("CLI page shows revision", cli("page", "1001", "--browser", "shopee-A"), "revision");
+  chkc("CLI act clicks by index", cli("act", "1001", "1 click", "--browser", "shopee-A"), "click");
+
   // same-id reconnect keeps identity (kicks stale, updates label)
   spawnNode(["daemon/test-mock-ext.ts", String(PORT), "browser-A", "shopee-A-renamed"]);
   const renamed = await pollUntil(async () => {

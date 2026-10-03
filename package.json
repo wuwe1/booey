@@ -55,6 +55,7 @@
     "test:client": "node test/client.mjs",
     "test:unit": "node --test test/page-model.test.ts test/actions.test.ts test/create-daemon.test.ts test/fuzzy.test.ts test/agent.test.ts test/ergonomics.test.ts",
     "test:pack": "node test/pack.mjs",
+    "calibrate": "node test/calibrate-fuzzy.mjs --sweep",
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
     "lint:fix": "biome check --write",

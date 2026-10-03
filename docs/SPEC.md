@@ -679,14 +679,21 @@ booey eval <tabId> <js> [--await] [--browser <id|label>]
 booey net <tabId> {list|body|clear} [--filter <re>] [--since <seq>] [<requestId>] [--browser <id|label>]
 booey screenshot <tabId> [<path>] [--browser <id|label>]
 booey nav <tabId> <url> [--browser <id|label>]
+booey page <tabId> [--browser <id|label>]
 booey send <tabId> <Method> [<params-json>] [--browser <id|label>]
+
+booey snapshot <tabId> [--full] [--browser <id|label>]   # indexed page text; --full = whole Snapshot
+booey sessions <tabId> [--browser <id|label>]
+booey act <tabId> "<index> <method> [arg]" [--snapshot] [--browser <id|label>]
+booey act <tabId> --json '[{index, method, args?}]' [--snapshot] [--browser <id|label>]
 
 booey ext path|zip [<out.zip>]                # locate / package the extension
 booey doctor                                  # daemon + extension + protocol-version check
 ```
 
-The CLI does not cover `/snapshot`, `/act`, `/page`, or `/sessions`. Reach those
-over HTTP or through `clients/ts`.
+`booey act` uses the daemon's cached snapshot (run `booey snapshot <tabId>` first,
+or pass `--snapshot` to refresh one now). The single-action form takes everything
+after the method as one argument.
 
 `--browser` may also come from the env var `BOOEY_BROWSER`. Output is JSON-line by
 default (`--pretty` for human reading).

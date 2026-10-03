@@ -6,6 +6,7 @@ import { test } from "node:test";
 import {
   collectNetRecords,
   findNode,
+  inFlightCount,
   interactiveNodes,
   matchFinishedResponses,
   type NodeRecord,
@@ -78,6 +79,62 @@ test("matchFinishedResponses returns only finished records whose url matches", (
   );
   assert.deepEqual(matchFinishedResponses(recs, /\/api\/other/), []); // matches url but not finished
   assert.deepEqual(matchFinishedResponses(recs, /nope/), []);
+});
+
+test("inFlightCount: pending counts, finished/failed/WS/data: do not", () => {
+  // one pending XHR
+  const recs = collectNetRecords([
+    ev(
+      "Network.requestWillBeSent",
+      { requestId: "R1", type: "XHR", request: { url: "https://x.com/a" } },
+      1,
+    ),
+  ]);
+  assert.equal(inFlightCount(recs), 1);
+  // finished → 0
+  collectNetRecords([ev("Network.loadingFinished", { requestId: "R1" }, 2)], recs);
+  assert.equal(inFlightCount(recs), 0);
+
+  // a failed request does not count
+  collectNetRecords(
+    [
+      ev(
+        "Network.requestWillBeSent",
+        { requestId: "R2", type: "Fetch", request: { url: "https://x.com/b" } },
+        3,
+      ),
+      ev("Network.loadingFailed", { requestId: "R2" }, 4),
+    ],
+    recs,
+  );
+  assert.equal(inFlightCount(recs), 0);
+
+  // a WebSocket never finishes but must not count (or idle would hang forever)
+  collectNetRecords(
+    [
+      ev(
+        "Network.requestWillBeSent",
+        { requestId: "R3", type: "WebSocket", request: { url: "wss://x.com/live" } },
+        5,
+      ),
+    ],
+    recs,
+  );
+  assert.equal(inFlightCount(recs), 0);
+
+  // a data: URL completes at responseReceived (no loadingFinished)
+  collectNetRecords(
+    [
+      ev(
+        "Network.requestWillBeSent",
+        { requestId: "R4", type: "Image", request: { url: "data:image/png;base64,AAAA" } },
+        6,
+      ),
+      ev("Network.responseReceived", { requestId: "R4", response: { status: 200 } }, 7),
+    ],
+    recs,
+  );
+  assert.equal(inFlightCount(recs), 0);
 });
 
 function node(p: Partial<NodeRecord> & { tag: string }): NodeRecord {

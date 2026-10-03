@@ -686,10 +686,15 @@ export class RelayClient {
    * events on the browser-process side, so it keeps working in a background tab
    * where in-page timers are throttled almost to a stop.
    *
-   * With `net: true` it also waits for network quiet — no new `Network.*` event
-   * for `quietMs` — which catches an async fetch that does not bump the revision.
-   * That needs the tab subscribed to `net` first (subscriptions are not
-   * retroactive); if it is not, this throws.
+   * With `net: true` it also waits for network idle: zero in-flight requests for
+   * `quietMs`. It tracks requests by `requestId` (added on `requestWillBeSent`,
+   * removed on `loadingFinished`/`loadingFailed`), so it correctly waits through a
+   * slow request's silent gap — a plain "no new event for a while" check would
+   * call that gap settled too early. WebSocket/EventSource requests never finish,
+   * so they are excluded, and a navigation (revision bump) resets the in-flight
+   * set so a stale request from the old document cannot hang it. `net: true` needs
+   * the tab subscribed to `net` first (subscriptions are not retroactive); if it
+   * is not, this throws.
    *
    * Returns `quiet: false` if `timeoutMs` ran out while the page still changed. A
    * page that never settles is a real answer, not an error.
@@ -705,27 +710,31 @@ export class RelayClient {
     if (watchNet) await this._requireNet(tabId);
     const deadline = Date.now() + timeoutMs;
     let last = await this.revision(tabId);
-    // Start the net cursor at "now" so only events after this call count.
+    // Start the net cursor at "now" so only requests after this call count.
     let netSince = watchNet ? (await this.readEvents(tabId, {})).nextSeq : 0;
-    let lastChange = Date.now();
+    let records = new Map<string, NetRecord>();
+    let lastActive = Date.now();
     while (Date.now() < deadline) {
       await sleep(pollMs);
-      let changed = false;
+      let active = false;
       const current = await this.revision(tabId);
       if (current !== last) {
         last = current;
-        changed = true;
+        records = new Map(); // a navigation retires the old document's in-flight requests
+        active = true;
       }
       if (watchNet) {
         const page = await this.readEvents(tabId, { since: netSince, filter: /^Network\./ });
         netSince = page.nextSeq;
-        if (page.events.length > 0) changed = true;
+        if (page.events.length > 0) active = true;
+        collectNetRecords(page.events, records);
+        if (inFlightCount(records) > 0) active = true; // still pending → not idle
       }
-      if (changed) {
-        lastChange = Date.now();
+      if (active) {
+        lastActive = Date.now();
         continue;
       }
-      if (Date.now() - lastChange >= quietMs) return { revision: last, quiet: true };
+      if (Date.now() - lastActive >= quietMs) return { revision: last, quiet: true };
     }
     return { revision: last, quiet: false };
   }
@@ -1192,6 +1201,8 @@ export interface NetRecord {
   requestId: string;
   url?: string;
   method?: string;
+  /** Resource type from `requestWillBeSent` (XHR / Document / WebSocket / …). */
+  type?: string;
   status?: number;
   mimeType?: string;
   finished?: boolean;
@@ -1217,6 +1228,7 @@ export function collectNetRecords(
     if (e.method === "Network.requestWillBeSent") {
       rec.url = p.request?.url ?? rec.url;
       rec.method = p.request?.method ?? rec.method;
+      rec.type = p.type ?? rec.type;
     } else if (e.method === "Network.responseReceived") {
       rec.status = p.response?.status ?? rec.status;
       rec.mimeType = p.response?.mimeType ?? rec.mimeType;
@@ -1237,6 +1249,26 @@ export function matchFinishedResponses(
   urlRe: RegExp,
 ): NetRecord[] {
   return [...records.values()].filter((r) => r.finished && r.url != null && urlRe.test(r.url));
+}
+
+/** Resource types that never finish, so they must not count toward network idle. */
+const NON_SETTLING_TYPES: ReadonlySet<string> = new Set(["WebSocket", "EventSource"]);
+
+/**
+ * How many requests are still in flight — not finished, not failed, and not of a
+ * long-lived type (WebSocket/EventSource). A `data:` URL completes at
+ * `responseReceived` without a `loadingFinished`, so a record with a status set is
+ * not counted. This is the basis of network-idle in `settled({net})`.
+ */
+export function inFlightCount(records: Map<string, NetRecord>): number {
+  let n = 0;
+  for (const r of records.values()) {
+    if (r.finished || r.failed) continue;
+    if (r.type != null && NON_SETTLING_TYPES.has(r.type)) continue;
+    if (r.url?.startsWith("data:") && r.status != null) continue;
+    n++;
+  }
+  return n;
 }
 
 // ---- L2 ergonomics: snapshot queries (deterministic, no LLM) ----

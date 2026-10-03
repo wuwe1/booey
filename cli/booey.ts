@@ -45,7 +45,7 @@ function parseArgs(argv: string[]): { args: string[]; flags: Record<string, any>
         const next = argv[i + 1];
         if (next !== undefined && !next.startsWith("--")) {
           // known boolean flags don't consume the next token
-          if (a === "--await" || a === "--pretty") {
+          if (a === "--await" || a === "--pretty" || a === "--snapshot" || a === "--full") {
             flags[a.slice(2)] = true;
           } else {
             flags[a.slice(2)] = next;
@@ -533,6 +533,62 @@ const cmds: Record<string, () => Promise<void>> = {
     out(ensureOk(r, "send"));
   },
 
+  // ---- L2 page model ----
+
+  async snapshot() {
+    const tabId = numArg(1, "tabId");
+    const r = ensureOk(await post("/snapshot", withBrowser({ tabId })), "snapshot");
+    const snap = r.result;
+    if (flags.full) return out(snap);
+    // Default: the human/LLM view (`[12]<button …>`), printed as-is.
+    console.log(snap?.indexedText ?? "(empty snapshot)");
+  },
+
+  async page() {
+    const tabId = numArg(1, "tabId");
+    out(ensureOk(await get(`/page${browserQuery(`tabId=${tabId}`)}`), "page"));
+  },
+
+  async sessions() {
+    const tabId = numArg(1, "tabId");
+    out(
+      ensureOk(await get(`/sessions${browserQuery(`tabId=${tabId}`)}`), "sessions").sessions || [],
+    );
+  },
+
+  // ---- L3 actions ----
+
+  // Single action:  booey act <tab> "<index> <method> [arg]"   (e.g. "12 click", "5 fill 你好")
+  // Batch (JSON):   booey act <tab> --json '[{"index":12,"method":"click"}]'
+  // Uses the daemon's cached snapshot (run `booey snapshot <tab>` first, or pass
+  // --snapshot to refresh one now).
+  async act() {
+    const tabId = numArg(1, "tabId");
+    let actions: any[];
+    if (flags.json) {
+      try {
+        actions = JSON.parse(String(flags.json));
+      } catch (e) {
+        return fail(`act --json: invalid JSON: ${(e as Error).message}`);
+      }
+      if (!Array.isArray(actions)) return fail("act --json: expected a JSON array of actions");
+    } else {
+      const spec = args[2];
+      if (!spec) return fail("act: expected \"<index> <method> [arg]\" or --json '[…]'");
+      const parts = spec.trim().split(/\s+/);
+      const index = Number(parts[0]);
+      const method = parts[1];
+      if (!Number.isFinite(index) || !method)
+        return fail('act: expected "<index> <method> [arg]" (e.g. "12 click" or "5 fill text")');
+      // Everything after the method is one argument (so `fill a b c` → args ["a b c"]).
+      const rest = spec.trim().slice(parts[0]!.length).trim().slice(method.length).trim();
+      actions = [{ index, method, ...(rest ? { args: [rest] } : {}) }];
+    }
+    if (flags.snapshot) ensureOk(await post("/snapshot", withBrowser({ tabId })), "act --snapshot");
+    const r = ensureOk(await post("/act", withBrowser({ tabId, actions })), "act");
+    out(r.result?.results ?? r);
+  },
+
   async help() {
     printHelp();
   },
@@ -615,6 +671,14 @@ INSPECT
   booey net <tabId> clear
   booey screenshot <tabId> [<path>]
   booey nav <tabId> <url>
+  booey page <tabId>                   # tab revision / url / attached
+
+PAGE MODEL (L2) / ACTIONS (L3)
+  booey snapshot <tabId> [--full]      # print the indexed page text; --full = whole Snapshot
+  booey sessions <tabId>               # out-of-process iframe sessions
+  booey act <tabId> "<index> <method> [arg]"   # e.g. "12 click" or "5 fill text"
+  booey act <tabId> --json '[{"index":12,"method":"click"}]'
+                                       # uses the cached snapshot; --snapshot refreshes one first
 
 ESCAPE
   booey send <tabId> <Method> [<params-json>]

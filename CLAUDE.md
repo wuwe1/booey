@@ -30,6 +30,7 @@ npm run version:check                             # package/manifest/PROTOCOL_VE
 npm run typecheck                                 # tsc --noEmit — strict
 npm run lint / npm run format                     # biome (lint / format)
 npm run build                                     # dist/ — publish-time only, never needed to develop
+npm run calibrate                                 # measure the 2.5-level fuzzy relocate (thresholds/weights)
 
 node daemon/server.ts [port]                     # run the daemon (default 9224)
 node daemon/test-mock-ext.ts <port> <id> <label> # a fake browser (protocol test double)
@@ -184,7 +185,7 @@ is optional.
 
 ## Testing
 
-`npm test` runs three suites in order. Expect `PASS=55` (protocol), `PASS=93`
+`npm test` runs three suites in order. Expect `PASS=58` (protocol), `PASS=93`
 (client), and `PASS=16` (lilto compat), all with `FAIL=0` and exit 0.
 `npm run test:pack` is separate (`PASS=13`) because it builds a tarball — see
 Distribution. `npm run test:unit` runs the pure-function unit tests.
