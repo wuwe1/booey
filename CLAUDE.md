@@ -96,6 +96,11 @@ dist/               build output, gitignored, publish only
   O(1) push, with monotonic seq. `/events?since=` is an incremental pull;
   `truncated` tells the caller the ring ate events it had not read. Never drop
   that flag — losing events and nothing happening must not look identical.
+- **L3 is the optional top layer, not the main path.** Reading data uses L1
+  (`send`/`evalFn`) and L2 (`snapshot`); L3 (`/act`, `agent()`) earns its keep only
+  for repeated actions that must survive redesigns — its value is the four-level
+  heal + cache migration, not the action vocabulary. Do not route reads through
+  `/act`; a read-only or one-shot consumer never calls it.
 - **The extension does not serialize anything.** It answers commands as they
   arrive and quotes the id back. All ordering decisions are the daemon's.
 

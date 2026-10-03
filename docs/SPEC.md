@@ -436,6 +436,13 @@ resolves it to `xp`/`elementHash`.
 
 ## Actions (L3)
 
+> **L3 is the optional top layer.** Reading data goes through L1 (`send` /
+> `evalFn`) and L2 (`snapshot`) — L3 adds nothing there. L3 pays off for one
+> pattern only: **the same action task, run repeatedly, that must survive site
+> redesigns.** Its value is the four-level heal + cache migration below, not the
+> action vocabulary (an agent can click via L1 `Input.dispatchMouseEvent`). A
+> read-only or one-shot consumer never needs to call `/act`.
+
 `POST /act` runs a batch of actions against a snapshot's `selectorMap`. Each
 action is either `{index, method, args}` (the daemon resolves the index to
 `xpath`/`elementHash`/`fingerprint`) or a full

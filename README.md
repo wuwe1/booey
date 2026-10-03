@@ -20,7 +20,12 @@ Three layers, each usable on its own:
 |---|---|---|
 | **L1** transport | multiplexed CDP RPC, per-tab concurrency, event subscriptions | `/send` `/events` |
 | **L2** page model | snapshot → flat nodes + LLM-facing indexed text + stable element identity | `/snapshot` |
-| **L3** actions | eleven element actions, replayed with a three-level fallback | `/act` |
+| **L3** actions *(optional)* | eleven element actions, replayed with a four-level fallback | `/act` |
+
+**Reading data uses L1 + L2.** L3 is the optional top layer: it pays off only for
+the "same action task, run repeatedly, must survive redesigns" pattern — its value
+is the heal + cache migration, not the action vocabulary. A read-only or one-shot
+consumer never touches it.
 
 It is **not** an agent: no LLM, no agent loop, no action cache. Those belong to
 the caller ([design doc](docs/booey-design.md) §6.3 / §11).
