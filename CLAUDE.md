@@ -177,7 +177,7 @@ processes and asserts multi-browser addressing (by id and label), error codes
 three concurrency levels, response pairing across a give-up, detach-cancels-
 inflight, event subscription/filtering, the `/events` cursor, the CLI round-trip,
 and same-id reconnect. `npm test` runs three suites in order — expect
-`PASS=55` (protocol), `PASS=71` (client), `PASS=16` (lilto compat), all
+`PASS=55` (protocol), `PASS=74` (client), `PASS=16` (lilto compat), all
 `FAIL=0`, exit 0. `npm run test:pack` is separate (`PASS=13`) because it builds
 a tarball — see Distribution.
 
@@ -330,8 +330,10 @@ user asks — pushing a tag triggers `.github/workflows/release.yml`.
   an LLM reads, `*` marking new nodes). A per-tab snapshot cache is keyed to the
   page `revision`. Also adds the L3 action layer (`POST /act`, milestone F):
   `daemon/actions.ts` holds the closed eleven-element-action vocabulary; the
-  executor (`ExtConn.act`) runs each action with the three-level fallback
-  (xpath → elementHash re-locate → `needsInference`) and the batch guards
+  executor (`ExtConn.act`) runs each action with the four-level fallback
+  (xpath → elementHash re-locate → fuzzy-fingerprint re-locate → `needsInference`;
+  the fuzzy level scores an `ElementFingerprint` by Sørensen–Dice similarity and a
+  heal returns `relocated` so the caller migrates its cache) and the batch guards
   (`terminatesSequence` + a page-`revision` re-check that keeps partial results).
   Not protocol, same release: the repo became a publishable package
   (`@wuwe1/booey`, first release 1.0.0, declaring protocol v6 in

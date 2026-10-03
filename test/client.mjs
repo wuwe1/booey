@@ -275,7 +275,33 @@ try {
   chk("stale xpath heals via elementHash", healed[0].ok, true);
   chk("...and marks healed", healed[0].healed, true);
 
-  // 第三级：xpath 和 elementHash 都没了 → needsInference。
+  // 2.5 级：xpath 和 elementHash 都失效，但指纹还在 → 按相似度模糊重定位（零 LLM）。
+  const btn = snapForAct.selectorMap[1];
+  const fp = {
+    tag: btn.tag,
+    role: btn.role,
+    name: btn.name,
+    attrs: btn.attrs,
+    tagPath: btn.xp.replace(/\[\d+\]/g, ""),
+    parentBranchHash: btn.parentBranchHash,
+  };
+  const fuzzy = await relay.act(1001, [
+    {
+      method: "click",
+      xpath: "/html[1]/body[1]/STALE[1]",
+      elementHash: "0000000000000000",
+      fingerprint: fp,
+    },
+  ]);
+  chk("stale xpath+hash heals via fuzzy fingerprint", fuzzy[0].ok, true);
+  chk("...marked healMethod fuzzy", fuzzy[0].healMethod, "fuzzy");
+  chk(
+    "...returns relocated identity for cache migration",
+    typeof fuzzy[0].relocated?.elementHash === "string",
+    true,
+  );
+
+  // 最后一级：xpath / elementHash / 指纹都对不上 → needsInference。
   const gone = await relay.act(1001, [
     { method: "click", xpath: "/html[1]/body[1]/STALE[1]", elementHash: "0000000000000000" },
   ]);

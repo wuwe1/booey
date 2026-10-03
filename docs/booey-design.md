@@ -328,19 +328,37 @@ Page.loadEventFired      → 脏
 **LLM 只返回 `{index, method, args}`**，其余字段由 daemon 查 selectorMap 补齐。动作词表封闭（抄 stagehand 的 11 个）：
 `click / fill / type / press / scrollTo / selectOption / hover / doubleClick / dragAndDrop / nextChunk / prevChunk`
 
-### 6.2 三级回退 —— 比 stagehand 多一级
+### 6.2 四级回退 —— 比 stagehand 多两级
 
-stagehand 是两级：重放 xpath → 失败就整个重新推理。我们中间插一级：
+> **2026-10-03 修订：中间那级已实现，并拆成两小级（精确 elementHash + 模糊指纹）。**
+> stagehand 是两级：重放 xpath → 失败就整个重新推理。我们在中间插了两级零-LLM 愈合：
 
 ```
-1. xpath 命中          → 执行                                零成本
-2. xpath 失效
-   → 在当前快照里查 elementHash
-   → 命中则用新 xpath 执行，并更新缓存                        零 LLM ★
-3. elementHash 也没了  → 重新推理（self-heal），更新缓存        一次 LLM
+1.   xpath 命中            → 执行                                      零成本
+2.   xpath 失效
+     → 当前快照里查 elementHash（精确）
+     → 命中则用新 xpath 执行                                          零 LLM ★
+2.5  elementHash 也没了
+     → 按 ElementFingerprint 相似度在快照里找回（模糊）
+     → 唯一高置信赢家则执行                                           零 LLM ★（抄 Scrapling）
+3.   模糊也不够          → needsInference，调用方重新推理             一次 LLM
 ```
 
-★ 这一级是我们独有的。**页面结构挪动但元素本身没变**（最常见的改版形态）时，stagehand 会花一次 LLM，我们不花。
+★ 这两级是我们独有的。**页面结构挪动但元素没变**（最常见改版）→ 第 2 级零 LLM；
+**结构改到 elementHash 都变了、但元素对人眼还在**（大改版）→ 第 2.5 级零 LLM。
+stagehand 两种都要花 LLM。
+
+**第 2.5 级的实现**（`daemon/page-model.ts` 的 `fuzzyRelocate`）：指纹
+`{tag, role, name, attrs, tagPath, parentBranchHash}` 对每个可见/可交互节点用
+Sørensen–Dice 打分，`name`（AX 名）权重最高、稳定属性 `id` 单独加权、`tagPath`
+模糊比容忍 wrapper 插删。思路抄 Scrapling 的 adaptive（存指纹 + 相似度 + 命中回写），
+但**比它严**：它阈值 40% 且返回并列最高分；动作点错不可逆，我们要最高分 ≥0.72 且
+领先第二名 ≥0.12 的**唯一赢家**，否则宁可交给 LLM。而且我们有 Scrapling 没有的
+第 3 级兜底，所以模糊这级可以宁缺毋滥。
+
+**指纹迁移**：任何一级愈合，结果带 `relocated:{xpath, elementHash, fingerprint}`，
+调用方据此更新缓存——网站一次次改版，身份跟着漂，下次直接命中第 1 级。这就是
+「指纹迁移兜日常改版（零 LLM），LLM 兜大改版（一次后写回）」的自维护抓取循环。
 
 结构沿用 stagehand 的洞见——**缓存重放与 self-heal 是同一条 code path**：
 

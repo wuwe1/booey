@@ -69,6 +69,21 @@ export interface NodeRecord {
   parentBranchHash: string;
 }
 
+/**
+ * 元素指纹：`elementHash` 是「相等/不等」的二值身份，一个字节变了就认不出；
+ * 指纹保留原始可模糊比较的特征，供 elementHash 精确命中失败后按相似度重定位
+ * （设计文档 §6.2 的 2.5 级）。字段都来自 NodeRecord，随 Action 走、可存可重放。
+ */
+export interface ElementFingerprint {
+  tag: string;
+  role: string;
+  name: string;
+  attrs: Record<string, string>;
+  /** 纯 tag 的祖先路径（xp 去掉兄弟序号）——插删 wrapper 时平滑降分，不归零。 */
+  tagPath: string;
+  parentBranchHash: string;
+}
+
 export interface Snapshot {
   revision: number;
   url: string;
@@ -253,6 +268,133 @@ function computeElementHash(
 /** 父分支哈希：只看结构路径，不看属性/名字。 */
 function computeParentBranchHash(branchPath: string[]): string {
   return hash64(branchPath.join("/"));
+}
+
+// ---- 模糊重定位（self-heal 2.5 级，设计文档 §6.2）----
+//
+// elementHash 精确命中失败后，用这些纯函数按相似度在新快照里找回「同一个元素」。
+// 思路抄 Scrapling 的 adaptive（存指纹 + 相似度打分 + 命中回写），但：
+//   - 我们有 AX role/name，是比 Scrapling 的裸 text 更稳的语义信号，权重给高；
+//   - 阈值比它严得多（它 40% 且返回并列最高分；动作点错不可逆，我们要唯一赢家）；
+//   - 兜底不是瞎猜而是交给 LLM（needsInference），所以模糊这级可以宁缺毋滥。
+
+/** xp（/html[1]/body[1]/button[1]）→ 纯 tag 路径（/html/body/button）。 */
+export function tagPathFromXpath(xp: string): string {
+  return xp.replace(/\[\d+\]/g, "");
+}
+
+/** NodeRecord → 指纹。 */
+export function fingerprintOf(node: NodeRecord): ElementFingerprint {
+  return {
+    tag: node.tag,
+    role: node.role,
+    name: node.name,
+    attrs: node.attrs,
+    tagPath: tagPathFromXpath(node.xp),
+    parentBranchHash: node.parentBranchHash,
+  };
+}
+
+/** Sørensen–Dice：两串字符二元组的重叠度 ∈ [0,1]。近似 difflib.ratio，~10 行。 */
+export function diceRatio(a: string, b: string): number {
+  if (a === b) return 1;
+  if (!a || !b || a.length < 2 || b.length < 2) return 0;
+  const grams = (s: string): Map<string, number> => {
+    const m = new Map<string, number>();
+    for (let i = 0; i < s.length - 1; i++) {
+      const g = s.slice(i, i + 2);
+      m.set(g, (m.get(g) ?? 0) + 1);
+    }
+    return m;
+  };
+  const A = grams(a);
+  const B = grams(b);
+  let overlap = 0;
+  let total = 0;
+  for (const [g, c] of A) {
+    total += c;
+    overlap += Math.min(c, B.get(g) ?? 0);
+  }
+  for (const c of B.values()) total += c;
+  return total === 0 ? 0 : (2 * overlap) / total;
+}
+
+/** 属性相似度：key 集合相似 0.5 + 共享 key 的值相似 0.5（抄 Scrapling 的 dict-diff）。 */
+function attrsSimilarity(a: Record<string, string>, b: Record<string, string>): number {
+  const ak = Object.keys(a).sort();
+  const bk = Object.keys(b).sort();
+  if (ak.length === 0 && bk.length === 0) return 1;
+  const keySim = diceRatio(ak.join(","), bk.join(","));
+  // 值相似按原指纹的全部 key 平均（缺失的 key 记 0，惩罚属性消失）。
+  let vs = 0;
+  for (const k of ak) vs += k in b ? diceRatio(a[k]!, b[k]!) : 0;
+  const valSim = ak.length ? vs / ak.length : keySim;
+  return 0.5 * keySim + 0.5 * valSim;
+}
+
+/**
+ * 指纹 × 候选节点 → 相似度 ∈ [0,1]。自适应分母：只对指纹里确实有的特征计分。
+ * name（AX 名）权重最高，稳定属性 id 单独加权（抄 Scrapling「结构大改时稳定属性
+ * 撑分」的洞见），tagPath 用模糊比容忍 wrapper 插删。
+ */
+export function scoreNode(fp: ElementFingerprint, node: NodeRecord): number {
+  const facets: Array<[number, number]> = [];
+  facets.push([0.15, fp.tag === node.tag ? 1 : 0]);
+  if (fp.role) facets.push([0.1, fp.role === node.role ? 1 : 0]);
+  if (fp.name) facets.push([0.32, diceRatio(fp.name, node.name)]);
+  if (fp.attrs.id) facets.push([0.16, diceRatio(fp.attrs.id, node.attrs.id ?? "")]);
+  facets.push([0.12, attrsSimilarity(fp.attrs, node.attrs)]);
+  facets.push([0.15, diceRatio(fp.tagPath, tagPathFromXpath(node.xp))]);
+
+  let num = 0;
+  let den = 0;
+  for (const [w, v] of facets) {
+    num += w * v;
+    den += w;
+  }
+  return den === 0 ? 0 : num / den;
+}
+
+export interface FuzzyMatch {
+  node: NodeRecord;
+  score: number;
+}
+
+export interface FuzzyOptions {
+  /** 最低可接受分；低于此交给 LLM。默认 0.72（动作点错不可逆，比抓取严）。 */
+  minScore?: number;
+  /** 必须领先第二名这么多才算唯一赢家，否则宁可交给 LLM。默认 0.12。 */
+  minMargin?: number;
+}
+
+/**
+ * 在候选节点里按指纹找回最像的那个。返回唯一的高置信赢家，否则 null。
+ * 只考虑可见或可交互的节点（动作目标），遍历全体打分（命中率优先，只在失效时跑）。
+ */
+export function fuzzyRelocate(
+  fp: ElementFingerprint,
+  nodes: NodeRecord[],
+  opts: FuzzyOptions = {},
+): FuzzyMatch | null {
+  const minScore = opts.minScore ?? 0.72;
+  const minMargin = opts.minMargin ?? 0.12;
+  let best: NodeRecord | null = null;
+  let bestScore = -1;
+  let second = -1;
+  for (const n of nodes) {
+    if (!n.vis && !n.int) continue;
+    const s = scoreNode(fp, n);
+    if (s > bestScore) {
+      second = bestScore;
+      bestScore = s;
+      best = n;
+    } else if (s > second) {
+      second = s;
+    }
+  }
+  if (!best || bestScore < minScore) return null;
+  if (bestScore - Math.max(second, 0) < minMargin) return null; // 不够唯一 → 交给 LLM
+  return { node: best, score: Math.round(bestScore * 100) / 100 };
 }
 
 /** DOM 的 attributes 数组是 [k1, v1, k2, v2, …]，只保留白名单里的键。 */

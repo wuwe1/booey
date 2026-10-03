@@ -438,22 +438,41 @@ resolves it to `xp`/`elementHash`.
 
 `POST /act` runs a batch of actions against a snapshot's `selectorMap`. Each
 action is either `{index, method, args}` (the daemon resolves the index to
-`xpath`/`elementHash`) or a full `{method, xpath, elementHash, args}`. The method
-vocabulary is closed (stagehand's eleven element actions): `click / fill / type /
-press / scrollTo / selectOption / hover / doubleClick / dragAndDrop / nextChunk /
+`xpath`/`elementHash`/`fingerprint`) or a full
+`{method, xpath, elementHash, args, fingerprint?}`. The method vocabulary is
+closed (stagehand's eleven element actions): `click / fill / type / press /
+scrollTo / selectOption / hover / doubleClick / dragAndDrop / nextChunk /
 prevChunk`.
 
-Three-level fallback (design doc §6.2) — the second level is the one that costs
-no LLM round-trip:
+`fingerprint` carries the element's fuzzy-matchable identity —
+`{tag, role, name, attrs, tagPath, parentBranchHash}` — and enables the fuzzy
+relocation level below. The daemon fills it automatically when resolving by
+`index`; a caller replaying a cached action includes the fingerprint it stored
+(from the snapshot, or from a prior result's `relocated`) to get fuzzy healing.
+Omitting it is valid — that action just skips the fuzzy level.
+
+Four-level fallback (design doc §6.2) — levels 2 and 2.5 cost no LLM round-trip:
 
 ```
-1. xpath locates the element            → execute          zero cost
-2. xpath stale → re-snapshot, find elementHash → new xpath → execute   ★ zero LLM
-3. elementHash gone                     → needsInference   one LLM (caller re-infers)
+1.   xpath locates the element            → execute                      zero cost
+2.   xpath stale → re-snapshot, find by elementHash → new xpath          ★ zero LLM
+2.5  elementHash gone → fuzzy-match fingerprint (similarity) → new xpath  ★ zero LLM
+3.   fuzzy below threshold                → needsInference    one LLM (caller re-infers)
 ```
 
-A result is `{ok, method, healed?, interrupted?, needsInference?, error?}`.
-`healed` marks level 2; `needsInference` marks level 3.
+Level 2.5 scores every visible/interactive node against the fingerprint
+(Sørensen–Dice on name/attrs/tag-path, weighted toward the AX name and stable
+attrs) and uses the top match only if it clears `0.72` **and** leads the runner-up
+by `0.12` — stricter than a scraper, because clicking the wrong element is not
+reversible; an unclear match defers to the LLM instead of guessing.
+
+A result is
+`{ok, method, healed?, healMethod?, score?, relocated?, interrupted?, needsInference?, error?}`.
+`healed` marks a relocation (level 2 or 2.5); `healMethod` is `"exact"` or
+`"fuzzy"`; `score` is the fuzzy confidence. On any heal, `relocated` carries the
+element's new identity `{xpath, elementHash, fingerprint}` — the caller writes it
+back to its cached action so the identity migrates with the site (next run hits
+level 1 directly). `needsInference` marks the final level.
 
 Batch guards (design doc §6.4): a `terminatesSequence` method (`navigate` /
 `goBack` / `goForward` / `switchTab` / `submit`) discards the rest of the queue,

@@ -4,7 +4,7 @@
 // xpath / elementHash / description。动作词表封闭（抄 stagehand 的 11 个元素动作）。
 // 三级回退和批量守卫的决策在这里，CDP 执行在 ExtConn（有 sendCdp）。
 
-import type { NodeRecord } from "./page-model.ts";
+import { type ElementFingerprint, fingerprintOf, type NodeRecord } from "./page-model.ts";
 
 export const ACTION_METHODS = [
   "click",
@@ -33,6 +33,12 @@ export interface ActionDraft {
   description?: string;
   xpath?: string;
   elementHash?: string;
+  /**
+   * 指纹：elementHash 精确命中失败后用来模糊重定位（§6.2 的 2.5 级）。按 index
+   * 解析时 daemon 自动从节点填；重放缓存动作想要模糊愈合就带上（调用方从上次结果
+   * 的 relocated/快照存下来）。不带也能跑，只是跳过模糊这级直接到 needsInference。
+   */
+  fingerprint?: ElementFingerprint;
 }
 
 /** daemon 补齐后的可执行动作（可序列化、可存盘、可重放）。 */
@@ -42,17 +48,27 @@ export interface Action {
   elementHash: string;
   args: string[];
   description: string;
+  fingerprint?: ElementFingerprint;
 }
 
 /** 单个动作的执行结果。 */
 export interface ActionResult {
   ok: boolean;
   method: ActionMethod;
-  /** elementHash 重定位成功（三级回退的第二级，零 LLM）。 */
+  /** 定位时发生了重定位（第二/2.5 级，零 LLM）。 */
   healed?: boolean;
+  /** 重定位方式：elementHash 精确 或 相似度模糊。 */
+  healMethod?: "exact" | "fuzzy";
+  /** 模糊重定位的置信分 ∈ [0,1]（仅 healMethod==="fuzzy"）。 */
+  score?: number;
+  /**
+   * 愈合后元素的新身份——调用方据此更新自己缓存的动作（指纹迁移：网站改版后身份
+   * 跟着漂，下次直接命中，不再触发愈合）。
+   */
+  relocated?: { xpath: string; elementHash: string; fingerprint: ElementFingerprint };
   /** 批量守卫中断了剩余动作。 */
   interrupted?: boolean;
-  /** 定位失败、需要调用方重新推理（三级回退的第三级）。 */
+  /** 定位失败、需要调用方重新推理（三级回退的最后一级）。 */
   needsInference?: boolean;
   error?: string;
 }
@@ -84,6 +100,7 @@ export function resolveDraft(
       elementHash: draft.elementHash,
       args: draft.args ?? [],
       description: draft.description ?? `${draft.method}`,
+      ...(draft.fingerprint ? { fingerprint: draft.fingerprint } : {}),
     };
   }
   if (typeof draft.index === "number") {
@@ -95,6 +112,8 @@ export function resolveDraft(
       elementHash: node.elementHash,
       args: draft.args ?? [],
       description: draft.description ?? `${draft.method} ${node.tag}`,
+      // 从节点自动填指纹，让按 index 的首次执行也能享受模糊愈合。
+      fingerprint: draft.fingerprint ?? fingerprintOf(node),
     };
   }
   return null;

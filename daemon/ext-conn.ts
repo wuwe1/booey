@@ -41,7 +41,13 @@ import {
   UNORDERED_CDP_METHODS,
 } from "./config.ts";
 import { httpError } from "./http-error.ts";
-import { buildSnapshot, type NodeRecord, type Snapshot } from "./page-model.ts";
+import {
+  buildSnapshot,
+  fingerprintOf,
+  fuzzyRelocate,
+  type NodeRecord,
+  type Snapshot,
+} from "./page-model.ts";
 import { RingBuffer } from "./ring-buffer.ts";
 
 /** Lane key for commands that address the browser rather than a tab. */
@@ -656,10 +662,13 @@ export class ExtConn {
   /**
    * 执行一批 Action，带三级回退和批量守卫（设计文档 §6.2 / §6.4）。
    *
-   * 三级回退：
+   * 四级回退（设计文档 §6.2）：
    *   1. xpath 定位 → 执行（零成本）
-   *   2. xpath 失效 → 重新 snapshot，按 elementHash 找新 xpath（零 LLM）★
-   *   3. elementHash 也没了 → 返回 needsInference，让调用方重新推理（一次 LLM）
+   *   2. xpath 失效 → 重新 snapshot，按 elementHash 精确找新 xpath（零 LLM）★
+   *   2.5 精确也没了 → 按指纹模糊相似度找回（零 LLM）★ 抄 Scrapling，但更严
+   *   3. 模糊也不够 → 返回 needsInference，让调用方重新推理（一次 LLM）
+   *
+   * 愈合成功时结果带 relocated（新 xpath/hash/指纹），调用方据此迁移自己的缓存。
    *
    * 批量守卫：terminatesSequence 的动作执行后丢弃队列剩余；每个动作后 revision
    * 变了（页面动了）也中断——URL 变化会通过 frameNavigated 反映成 revision bump。
@@ -670,18 +679,31 @@ export class ExtConn {
     const baseline = this.pageState.get(tabId)?.revision ?? 0;
     const results: ActionResult[] = [];
     for (const action of actions) {
-      let loc = await this._locate(tabId, action.xpath);
-      let healed = false;
+      const originalXpath = action.xpath;
+      let loc = await this._locate(tabId, originalXpath);
+      let heal: { method: "exact" | "fuzzy"; node: NodeRecord; score?: number } | null = null;
       if (!loc) {
-        // 第二级：elementHash 重定位。重新取树，找同 hash 的节点拿新 xpath。
+        // 定位失败：重新取树，先按 elementHash 精确找回，再按指纹模糊找回。
         const r = await this.snapshot(tabId);
         if (r.ok) {
           const nodes = (r.result?.nodes ?? []) as NodeRecord[];
-          const node = nodes.find((n) => n.elementHash === action.elementHash);
-          if (node && node.xp !== action.xpath) {
+          let node: NodeRecord | undefined = nodes.find(
+            (n) => n.elementHash === action.elementHash,
+          );
+          let method: "exact" | "fuzzy" = "exact";
+          let score: number | undefined;
+          if (!node && action.fingerprint) {
+            const m = fuzzyRelocate(action.fingerprint, nodes);
+            if (m) {
+              node = m.node;
+              method = "fuzzy";
+              score = m.score;
+            }
+          }
+          if (node && node.xp !== originalXpath) {
             action.xpath = node.xp;
             loc = await this._locate(tabId, node.xp);
-            healed = true;
+            if (loc) heal = { method, node, score };
           }
         }
       }
@@ -698,7 +720,18 @@ export class ExtConn {
       results.push({
         ok: r.ok,
         method: action.method,
-        ...(healed ? { healed: true } : {}),
+        ...(heal
+          ? {
+              healed: true,
+              healMethod: heal.method,
+              ...(heal.score != null ? { score: heal.score } : {}),
+              relocated: {
+                xpath: heal.node.xp,
+                elementHash: heal.node.elementHash,
+                fingerprint: fingerprintOf(heal.node),
+              },
+            }
+          : {}),
         ...(r.ok ? {} : { error: r.error }),
       });
       if (TERMINATES_SEQUENCE.has(action.method)) break;

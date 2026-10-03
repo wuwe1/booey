@@ -53,7 +53,7 @@
     "test": "node test/integration.mjs && node test/client.mjs && node test/compat-lilto.mjs",
     "test:compat": "node test/compat-lilto.mjs",
     "test:client": "node test/client.mjs",
-    "test:unit": "node --test test/page-model.test.ts test/actions.test.ts test/create-daemon.test.ts",
+    "test:unit": "node --test test/page-model.test.ts test/actions.test.ts test/create-daemon.test.ts test/fuzzy.test.ts",
     "test:pack": "node test/pack.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
