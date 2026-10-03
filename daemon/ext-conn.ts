@@ -648,12 +648,15 @@ export class ExtConn {
    * snapshot + 重新推理。
    */
   resolveActions(tabId: number, drafts: ActionDraft[]): Action[] {
+    // 只有按 index 的草稿才需要 selectorMap。全量草稿（xpath+elementHash，缓存重放
+    // 的形态）不需要快照，这样「命中缓存就重放」不必先拍一张快照（零往返）。
+    const needsMap = drafts.some((d) => typeof d.index === "number");
     const cached = this.snapshots.get(tabId);
-    if (!cached)
+    if (needsMap && !cached)
       throw httpError(409, `no snapshot cached for tab ${tabId}; POST /snapshot first`, {
         code: "CONFLICT",
       });
-    const actions = resolveDrafts(drafts, cached.snapshot.selectorMap);
+    const actions = resolveDrafts(drafts, cached?.snapshot.selectorMap ?? {});
     if (!actions)
       throw httpError(409, "selectorMap stale; re-snapshot and re-infer", { code: "CONFLICT" });
     return actions;

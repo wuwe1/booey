@@ -212,7 +212,21 @@ export type ActionMethod =
   | "nextChunk"
   | "prevChunk";
 
-/** 调用方给的动作：给 `index` 或直接给 `xpath`+`elementHash`。 */
+/**
+ * 元素指纹：elementHash 精确命中失败后用来模糊重定位（§6.2 的 2.5 级）。
+ * 字段都来自 NodeRecord，可存可重放，随动作走。
+ */
+export interface ElementFingerprint {
+  tag: string;
+  role: string;
+  name: string;
+  attrs: Record<string, string>;
+  /** 纯 tag 的祖先路径（xp 去掉兄弟序号）。 */
+  tagPath: string;
+  parentBranchHash: string;
+}
+
+/** 调用方给的动作：给 `index` 或直接给 `xpath`+`elementHash`（可选 `fingerprint`）。 */
 export interface ActionDraft {
   index?: number;
   method: ActionMethod;
@@ -220,13 +234,34 @@ export interface ActionDraft {
   description?: string;
   xpath?: string;
   elementHash?: string;
+  /** 带上它，elementHash 失配时才能走模糊重定位（§6.2 的 2.5 级）。 */
+  fingerprint?: ElementFingerprint;
+}
+
+/** 一个可缓存、可重放的完整动作（指纹齐全，replay 时直接当 ActionDraft 发）。 */
+export interface CachedAction {
+  method: ActionMethod;
+  args: string[];
+  xpath: string;
+  elementHash: string;
+  fingerprint: ElementFingerprint;
+  description?: string;
 }
 
 export interface ActionResult {
   ok: boolean;
   method: ActionMethod;
+  /** 定位时发生了重定位（第二/2.5 级，零 LLM）。 */
   healed?: boolean;
+  /** 重定位方式：elementHash 精确 或 相似度模糊。 */
+  healMethod?: "exact" | "fuzzy";
+  /** 模糊重定位的置信分 ∈ [0,1]（仅 healMethod==="fuzzy"）。 */
+  score?: number;
+  /** 愈合后元素的新身份——调用方据此迁移缓存，下次直接命中。 */
+  relocated?: { xpath: string; elementHash: string; fingerprint: ElementFingerprint };
+  /** 批量守卫中断了剩余动作。 */
   interrupted?: boolean;
+  /** 定位失败、需要调用方重新推理（最后一级）。 */
   needsInference?: boolean;
   error?: string;
 }
@@ -630,9 +665,11 @@ export class RelayClient {
    * 执行一批动作（设计文档 §6）。`drafts` 是 LLM 返回的 {index, method, args}，
    * daemon 用缓存的 selectorMap 补齐 xpath/elementHash，再执行。
    *
-   * 三级回退：xpath 失效 → elementHash 重定位（`healed: true`）→ 都没了就
-   * `needsInference: true`（调用方重新 snapshot + 推理）。批量守卫：terminatesSequence
-   * 的动作执行后丢弃队列剩余；页面 revision 变了也中断（`interrupted: true`）。
+   * 四级回退：xpath → elementHash 精确（`healMethod:"exact"`）→ 指纹模糊
+   * （`healMethod:"fuzzy"`）→ `needsInference`。任何愈合都带 `relocated`，调用方据此
+   * 迁移缓存。批量守卫：terminatesSequence 的动作执行后丢弃剩余；revision 变了也
+   * 中断（`interrupted: true`）。想要模糊这级，草稿里带上 `fingerprint`
+   * （按 index 时 daemon 自动填；重放时自己带）。多数情况用 `agent()` 编排器更省事。
    */
   async act(tabId: number, drafts: ActionDraft[]): Promise<ActionResult[]> {
     const r = await this.req<{ ok: true; result: { results: ActionResult[] } }>("POST", "/act", {
@@ -696,8 +733,258 @@ export class RelayClient {
   ): Promise<T> {
     return await this.cdp<T>(tabId, method, params, opts);
   }
+
+  // ---- orchestration ----
+
+  /**
+   * The self-maintaining action loop, with your LLM and your cache injected.
+   *
+   * Booey owns the ceremony (snapshot → infer → act → heal → migrate cache); you
+   * own the brain (`llm`) and the storage (`cache`). Neither ever enters the
+   * daemon — this is a client-side convenience over the three bare layers.
+   *
+   *   const agent = relay.agent({ llm, cache });
+   *   await agent.do(tabId, "把第一个商品加入购物车");
+   */
+  agent(opts: AgentOptions): BooeyAgent {
+    return new BooeyAgent(this, opts);
+  }
 }
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// ---- orchestration: the self-maintaining action loop ----
+
+/** 你注入的脑子：看带索引的页面文本，决定要执行的动作。 */
+export interface AgentLLM {
+  infer(ctx: {
+    instruction: string;
+    /** 给 LLM 读的 `[12]<button …>` 文本（`*` 标新节点）。 */
+    indexedText: string;
+    url: string;
+    snapshot: Snapshot;
+  }): Promise<ActionDraft[]> | ActionDraft[];
+}
+
+/** 你注入的存储：命中就重放，不命中/失配就重新推理再写回。可同步可异步。 */
+export interface ActionCache {
+  get(key: string): Promise<CachedAction[] | null> | CachedAction[] | null;
+  set(key: string, actions: CachedAction[]): Promise<void> | void;
+}
+
+export interface AgentOptions {
+  llm: AgentLLM;
+  cache?: ActionCache;
+  /** 覆盖默认 key 推导（默认 `cacheKey(归一化URL, instruction)`）。 */
+  keyFor?: (ctx: { url: string; instruction: string }) => string;
+}
+
+/** 一批动作结果的汇总——省得调用方自己遍历看那几个标志。 */
+export interface ActSummary {
+  allOk: boolean;
+  ran: number;
+  healed: { exact: number; fuzzy: number };
+  needsInference: boolean;
+  interrupted: boolean;
+}
+
+export interface AgentOutcome {
+  ok: boolean;
+  results: ActionResult[];
+  /** 本次执行的动作（可缓存形态，指纹齐全、已应用迁移）。 */
+  actions: CachedAction[];
+  /** 命中缓存并重放（零 LLM）。 */
+  fromCache: boolean;
+  /** 走了快照 + LLM 推理。 */
+  reinferred: boolean;
+  summary: ActSummary;
+}
+
+/** URL 里这些 query 参数易变（会话/时间戳/签名），不进缓存 key。 */
+const VOLATILE_QUERY = new Set([
+  "token",
+  "session",
+  "sessionid",
+  "sid",
+  "ts",
+  "timestamp",
+  "_",
+  "sig",
+  "signature",
+  "nonce",
+  "t",
+]);
+
+/** 归一化 URL：去 hash、去易变 query、排序剩余 query——让 key 跨会话稳定。 */
+export function normalizeUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    const keep = [...u.searchParams.entries()]
+      .filter(([k]) => !VOLATILE_QUERY.has(k.toLowerCase()))
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const qs = keep.map(([k, v]) => `${k}=${v}`).join("&");
+    return u.origin + u.pathname + (qs ? `?${qs}` : "");
+  } catch {
+    return raw;
+  }
+}
+
+/** 缓存 key = 归一化URL + instruction。不含结构指纹——改版靠四级愈合扛。 */
+export function cacheKey(url: string, instruction: string): string {
+  return `${normalizeUrl(url)}\n${instruction.trim()}`;
+}
+
+/** 把一批结果压成一个好用的汇总。 */
+export function summarizeActions(results: ActionResult[]): ActSummary {
+  let exact = 0;
+  let fuzzy = 0;
+  let needsInference = false;
+  let interrupted = false;
+  let allOk = true;
+  for (const r of results) {
+    if (r.healMethod === "exact") exact++;
+    if (r.healMethod === "fuzzy") fuzzy++;
+    if (r.needsInference) needsInference = true;
+    if (r.interrupted) interrupted = true;
+    if (!r.ok) allOk = false;
+  }
+  return { allOk, ran: results.length, healed: { exact, fuzzy }, needsInference, interrupted };
+}
+
+const EMPTY_FINGERPRINT: ElementFingerprint = {
+  tag: "",
+  role: "",
+  name: "",
+  attrs: {},
+  tagPath: "",
+  parentBranchHash: "",
+};
+
+function fingerprintFromNode(n: NodeRecord): ElementFingerprint {
+  return {
+    tag: n.tag,
+    role: n.role,
+    name: n.name,
+    attrs: n.attrs,
+    tagPath: n.xp.replace(/\[\d+\]/g, ""),
+    parentBranchHash: n.parentBranchHash,
+  };
+}
+
+function cachedToDraft(a: CachedAction): ActionDraft {
+  return {
+    method: a.method,
+    args: a.args,
+    xpath: a.xpath,
+    elementHash: a.elementHash,
+    fingerprint: a.fingerprint,
+    ...(a.description ? { description: a.description } : {}),
+  };
+}
+
+/** 把 LLM 的草稿 + 刚拍的快照 + 结果，解析成可缓存的完整动作。 */
+function buildCached(
+  drafts: ActionDraft[],
+  snapshot: Snapshot,
+  results: ActionResult[],
+): CachedAction[] {
+  return drafts.map((d, i) => {
+    const node = typeof d.index === "number" ? snapshot.selectorMap[d.index] : undefined;
+    const base: CachedAction = {
+      method: d.method,
+      args: d.args ?? [],
+      xpath: node?.xp ?? d.xpath ?? "",
+      elementHash: node?.elementHash ?? d.elementHash ?? "",
+      fingerprint: node ? fingerprintFromNode(node) : (d.fingerprint ?? EMPTY_FINGERPRINT),
+      ...(d.description ? { description: d.description } : {}),
+    };
+    const r = results[i];
+    if (r?.relocated) {
+      base.xpath = r.relocated.xpath;
+      base.elementHash = r.relocated.elementHash;
+      base.fingerprint = r.relocated.fingerprint;
+    }
+    return base;
+  });
+}
+
+/** 应用 relocated 到缓存动作；没有任何迁移则返回 null（不必写回）。 */
+function applyRelocations(cached: CachedAction[], results: ActionResult[]): CachedAction[] | null {
+  let changed = false;
+  const out = cached.map((a, i) => {
+    const r = results[i];
+    if (r?.relocated) {
+      changed = true;
+      return {
+        ...a,
+        xpath: r.relocated.xpath,
+        elementHash: r.relocated.elementHash,
+        fingerprint: r.relocated.fingerprint,
+      };
+    }
+    return a;
+  });
+  return changed ? out : null;
+}
+
+export class BooeyAgent {
+  private readonly relay: RelayClient;
+  private readonly opts: AgentOptions;
+
+  constructor(relay: RelayClient, opts: AgentOptions) {
+    this.relay = relay;
+    this.opts = opts;
+  }
+
+  /**
+   * 执行一句自然语言任务，自带长寿链:
+   *   命中缓存 → 重放（四级愈合，零 LLM）→ relocated 则迁移缓存
+   *   未命中/需重推 → 快照 → llm.infer → 执行 → 写回缓存
+   */
+  async do(tabId: number, instruction: string): Promise<AgentOutcome> {
+    const { llm, cache } = this.opts;
+    const url = (await this.relay.page(tabId)).url;
+    const key = (this.opts.keyFor ?? (({ url: u, instruction: i }) => cacheKey(u, i)))({
+      url,
+      instruction,
+    });
+
+    // 1. 命中缓存 → 直接重放（零 LLM、零快照；靠 act 的四级愈合扛改版）。
+    if (cache) {
+      const cached = await cache.get(key);
+      if (cached && cached.length > 0) {
+        const results = await this.relay.act(tabId, cached.map(cachedToDraft));
+        const summary = summarizeActions(results);
+        if (!summary.needsInference) {
+          const migrated = applyRelocations(cached, results);
+          if (migrated) await cache.set(key, migrated);
+          return {
+            ok: summary.allOk,
+            results,
+            actions: migrated ?? cached,
+            fromCache: true,
+            reinferred: false,
+            summary,
+          };
+        }
+        // needsInference → 落到重新推理。
+      }
+    }
+
+    // 2. 未命中 / 重放要求重推 → 快照 + 推理 + 执行 + 写回。
+    const snapshot = await this.relay.snapshot(tabId);
+    const drafts = await llm.infer({
+      instruction,
+      indexedText: snapshot.indexedText,
+      url,
+      snapshot,
+    });
+    const results = await this.relay.act(tabId, drafts);
+    const summary = summarizeActions(results);
+    const actions = buildCached(drafts, snapshot, results);
+    if (cache && summary.allOk) await cache.set(key, actions);
+    return { ok: summary.allOk, results, actions, fromCache: false, reinferred: true, summary };
+  }
 }

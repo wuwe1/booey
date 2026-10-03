@@ -177,7 +177,7 @@ processes and asserts multi-browser addressing (by id and label), error codes
 three concurrency levels, response pairing across a give-up, detach-cancels-
 inflight, event subscription/filtering, the `/events` cursor, the CLI round-trip,
 and same-id reconnect. `npm test` runs three suites in order — expect
-`PASS=55` (protocol), `PASS=74` (client), `PASS=16` (lilto compat), all
+`PASS=55` (protocol), `PASS=83` (client), `PASS=16` (lilto compat), all
 `FAIL=0`, exit 0. `npm run test:pack` is separate (`PASS=13`) because it builds
 a tarball — see Distribution.
 

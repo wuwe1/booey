@@ -554,6 +554,27 @@ await relay.attach(tab.tabId, { events: ["net"] });
 const title = await relay.evalFn(tab.tabId, () => document.title);
 ```
 
+### The agent loop (`relay.agent`)
+
+For the L3 action flow, `relay.agent({ llm, cache })` wraps the whole
+self-maintaining loop — snapshot → infer → act → heal → migrate cache — with the
+LLM and the cache **injected** (neither enters the daemon; this is a client-side
+convenience over the bare layers):
+
+```ts
+const agent = relay.agent({ llm, cache });   // llm: {infer(ctx)}, cache: {get,set}
+const r = await agent.do(tab.tabId, "add the first item to the cart");
+// r: { ok, fromCache, reinferred, results, actions, summary }
+```
+
+`do()` keys the cache on `cacheKey(normalizeUrl(url), instruction)` (volatile
+query params stripped). A cache hit **replays** the stored actions with no
+snapshot and no LLM, leaning on `/act`'s four-level heal; any `relocated` result
+migrates the cache in place. A miss (or a replay that returns `needsInference`)
+snapshots, calls `llm.infer({ instruction, indexedText, url, snapshot })`,
+executes, and writes the resolved actions back. `cacheKey` / `normalizeUrl` /
+`summarizeActions` are exported for callers that want the pieces without the loop.
+
 ### Embedding the daemon
 
 The daemon can run in-process instead of as a separate `node daemon/server.ts`

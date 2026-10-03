@@ -308,6 +308,36 @@ try {
   chk("missing element reports needsInference", gone[0].needsInference, true);
   chk("...and fails", gone[0].ok, false);
 
+  // ---- orchestrator: 注入 llm + cache 的自维护循环 ----
+  let inferCalls = 0;
+  const llm = {
+    infer: () => {
+      inferCalls++;
+      return [{ index: 1, method: "click" }];
+    },
+  };
+  const store = new Map();
+  const cache = {
+    get: (k) => store.get(k) ?? null,
+    set: (k, v) => void store.set(k, v),
+  };
+  const agent = relay.agent({ llm, cache });
+
+  // 首次：未命中 → 快照 + 推理 + 执行 + 写回缓存。
+  const a1 = await agent.do(1001, "点那个按钮");
+  chk("agent first run: reinferred", a1.reinferred, true);
+  chk("agent first run: not from cache", a1.fromCache, false);
+  chk("agent first run: ok", a1.ok, true);
+  chk("agent first run: llm called once", inferCalls, 1);
+  chk("agent first run: cache written", store.size, 1);
+
+  // 再次：命中缓存 → 重放（零 LLM、零快照）。
+  const a2 = await agent.do(1001, "点那个按钮");
+  chk("agent second run: from cache", a2.fromCache, true);
+  chk("agent second run: not reinferred", a2.reinferred, false);
+  chk("agent second run: ok", a2.ok, true);
+  chk("agent second run: llm NOT called again", inferCalls, 1);
+
   // ---- errors carry codes, not prose ----
   try {
     await relay.eval(9999, "1");
